@@ -74,13 +74,40 @@ export function getAiInstance(apiKey: string) {
     return new GoogleGenAI({ apiKey });
 }
 
+// New function to handle model fallback strategy
+async function callWithFallback<T>(
+    apiKey: string,
+    operation: (model: string) => Promise<T>
+): Promise<T> {
+    const models = ['gemini-2.5-pro', 'gemini-2.5-pro', 'gemini-2.5-flash-lite'];
+    let lastError: any;
+
+    for (const model of models) {
+        try {
+            return await operation(model);
+        } catch (error: any) {
+            console.warn(`Model ${model} failed:`, error.message);
+            lastError = error;
+            
+            // If it's not a quota error, try the next model
+            // For quota errors, we still want to try fallback models
+            if (error.status === 429) {
+                console.log(`Rate limit hit for ${model}, trying fallback model...`);
+            }
+        }
+    }
+    
+    // If all models failed, throw the last error
+    throw lastError;
+}
+
 // Function to validate API key
 export async function validateApiKey(apiKey: string): Promise<boolean> {
     try {
         const ai = getAiInstance(apiKey);
         // Make a simple request to test the API key
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-2.5-pro',
             contents: 'Hello, this is a test to validate the API key.',
         });
         return !!response.text;
@@ -95,7 +122,6 @@ export async function getLaptopRecommendations(
   apiKey: string
 ): Promise<{ laptops: Laptop[], sources: GroundingSource[] }> {
   const ai = getAiInstance(apiKey);
-  const model = "gemini-2.5-flash";
 
   const searchPrompt = `
     Find the top 5 best laptop recommendations based on the following criteria for a user in ${args.country}:
@@ -113,7 +139,7 @@ export async function getLaptopRecommendations(
         d.  Graphics card model (dedicated GPU preferred, but integrated graphics are acceptable)
         e.  Amount of RAM (specific amount preferred)
         f.  Storage type and capacity (specific details preferred)
-        g.  Display specifications (size, resolution, and refresh rate if available)
+        g.  Display size and resolution (specific details preferred)
         h.  Operating system
         i.  Webcam specifications (resolution and features if available)
         j.  Keyboard features (backlighting, numpad, etc. if available)
@@ -125,12 +151,15 @@ export async function getLaptopRecommendations(
   `;
 
   try {
-    const searchResponse = await ai.models.generateContent({
-        model: model,
-        contents: searchPrompt,
-        config: {
-            tools: [{ googleSearch: {} }],
-        },
+    // Use fallback strategy for the search operation
+    const searchResponse = await callWithFallback(apiKey, async (model) => {
+        return await ai.models.generateContent({
+            model: model,
+            contents: searchPrompt,
+            config: {
+                tools: [{ googleSearch: {} }],
+            },
+        });
     });
 
     const groundedText = searchResponse.text;
@@ -145,7 +174,7 @@ export async function getLaptopRecommendations(
     1. Only extract data that is explicitly present in the provided text.
     2. If a piece of information (like a URL) is missing or mentioned as unavailable, leave the corresponding JSON field as an empty string. Do not invent or guess any information.
     3. Include laptops even if some information is missing - partial information is better than no recommendation.
-    4. Prioritize laptops where you can verify the price and basic specifications.
+    4. **PRIORITY:** Prioritize laptops where you can verify the price and basic specifications.
     5. If you find more than 5 good options, select the 5 most relevant to the user's needs.
 
     Text: """
@@ -153,17 +182,19 @@ export async function getLaptopRecommendations(
     """
     `;
 
-    // Second call: Extract structured data from the grounded text
-    const extractionResponse = await ai.models.generateContent({
-        model: model,
-        contents: extractionPrompt,
-        config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: Type.ARRAY,
-                items: laptopSchema,
+    // Use fallback strategy for the extraction operation
+    const extractionResponse = await callWithFallback(apiKey, async (model) => {
+        return await ai.models.generateContent({
+            model: model,
+            contents: extractionPrompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.ARRAY,
+                    items: laptopSchema,
+                },
             },
-        },
+        });
     });
 
     const laptops = JSON.parse(extractionResponse.text) as Laptop[];
@@ -396,18 +427,35 @@ export async function generateLaptopImage(modelName: string, apiKey: string): Pr
     // Check if image generation is disabled
     const IMAGE_GENERATION_ENABLED = true; // Always enable for user-provided keys
     
+    // First check if we've hit rate limits recently
+    const lastRequestTime = localStorage.getItem('lastImageRequestTime');
+    const rateLimitPeriod = 60000; // 1 minute
+    if (lastRequestTime) {
+        const timeDiff = Date.now() - parseInt(lastRequestTime);
+        if (timeDiff < rateLimitPeriod) {
+            console.log(`Skipping image request for "${modelName}" due to rate limiting (${Math.ceil((rateLimitPeriod - timeDiff) / 1000)}s remaining)`);
+            return null;
+        }
+    }
+    
     try {
         const ai = getAiInstance(apiKey);
         // Instead of generating images, search for them using Google Search
         const searchPrompt = `Find an official product image for '${modelName}' laptop from manufacturer website or major retailer. Return only the image URL.`;
         
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash-image-preview',  // Use the correct model as per project requirements
-            contents: searchPrompt,
-            config: {
-                tools: [{ googleSearch: {} }],
-            },
+        // Use fallback strategy for image search
+        const response = await callWithFallback(apiKey, async (model) => {
+            return await ai.models.generateContent({
+                model: model,
+                contents: searchPrompt,
+                config: {
+                    tools: [{ googleSearch: {} }],
+                },
+            });
         });
+
+        // Update last request time
+        localStorage.setItem('lastImageRequestTime', Date.now().toString());
 
         // Extract image URL from the search results
         if (response.text) {
@@ -423,13 +471,18 @@ export async function generateLaptopImage(modelName: string, apiKey: string): Pr
         
         // Fallback: Try a more general search
         console.warn(`No image found for "${modelName}" in initial search. Trying fallback search.`);
-        const fallbackResponse = await ai.models.generateContent({
-            model: 'gemini-2.5-flash-image-preview',
-            contents: `Find a high-quality product image for ${modelName} laptop. Return only the image URL.`,
-            config: {
-                tools: [{ googleSearch: {} }],
-            },
+        const fallbackResponse = await callWithFallback(apiKey, async (model) => {
+            return await ai.models.generateContent({
+                model: model,
+                contents: `Find a high-quality product image for ${modelName} laptop. Return only the image URL.`,
+                config: {
+                    tools: [{ googleSearch: {} }],
+                },
+            });
         });
+        
+        // Update last request time
+        localStorage.setItem('lastImageRequestTime', Date.now().toString());
         
         if (fallbackResponse.text) {
             const urlRegex = /(https?:\/\/[^\s"]+\.(?:jpg|jpeg|png|webp))/gi;
@@ -452,6 +505,10 @@ export async function generateLaptopImage(modelName: string, apiKey: string): Pr
             // If it's a Google API error, log additional details
             if ('status' in error) {
                 console.error(`API Status: ${(error as any).status}`);
+                // If we hit rate limits, store the time to prevent further requests
+                if ((error as any).status === 429) {
+                    localStorage.setItem('lastImageRequestTime', Date.now().toString());
+                }
             }
             if ('code' in error) {
                 console.error(`API Code: ${(error as any).code}`);
@@ -468,20 +525,47 @@ export async function generateLaptopImage(modelName: string, apiKey: string): Pr
 export async function analyzeBestFeatures(
     laptops: Laptop[],
     userNeeds: RecommendationArgs | null,
-    apiKey: string
+    apiKey: string,
+    isEgypt: boolean = false
 ): Promise<string[]> {
     const ai = getAiInstance(apiKey);
     if (!userNeeds) return laptops.map(() => 'N/A');
     
-    const model = "gemini-2.5-flash";
-    const prompt = `
+    const prompt = isEgypt ? 
+        `أنت خبير تكنولوجيا بتلخص لليوزر اختيارات اللابتوبات.
+        احتياجات اليوزر الأساسية هي:
+        - الاستخدام: ${userNeeds.primaryUse}
+        - الميزانية: ~${userNeeds.budget} ${userNeeds.currency}
+        - احتياجات تانية: ${userNeeds.specificNeeds}
+
+        دول ${laptops.length} لابتوبات موصى بيها:
+        ${laptops.map((l, i) => `
+        لابتوب ${i + 1}: ${l.modelName}
+        - CPU: ${l.specs.cpu}
+        - GPU: ${l.specs.gpu}
+        - RAM: ${l.specs.ram}
+        - Display: ${l.specs.display}
+        - OS: ${l.specs.operatingSystem}
+        - Webcam: ${l.specs.webcam}
+        - Keyboard: ${l.specs.keyboard}
+        - Ports: ${l.specs.ports}
+        `).join('')}
+
+        **مهماتك:**
+        لو كل لابتوب من دول، اكتب جملة واحدة بس، مختصرة، بتسلط الضوء على أهم feature أو ميزة متميزة ليه بالنسباللاليوزر ده.
+        ركز على إيه اللي بيخليه اختيار ممتاز.
+        مثال: "Features the most powerful GPU in this list for gaming." أو "Boasts a stunning OLED display ideal for creative work."
+
+        ابعتلي بس JSON object فيه key واحد اسمه "features" واللي هو array من ${laptops.length} strings، واحدة لكل لابتوب بالترتيب اللي اديتهالك.
+        ` :
+        `
         You are a tech expert summarizing laptop options for a user.
         The user's primary needs are:
         - Use Case: ${userNeeds.primaryUse}
         - Budget: ~${userNeeds.budget} ${userNeeds.currency}
         - Other Needs: ${userNeeds.specificNeeds}
 
-        Here are 5 recommended laptops:
+        Here are ${laptops.length} recommended laptops:
         ${laptops.map((l, i) => `
         Laptop ${i + 1}: ${l.modelName}
         - CPU: ${l.specs.cpu}
@@ -495,37 +579,86 @@ export async function analyzeBestFeatures(
         `).join('')}
 
         **Your Task:**
-        For each of the 5 laptops, provide a single, concise sentence that highlights its **single best feature or standout highlight** for this user.
+        For each of the ${laptops.length} laptops, provide a single, concise sentence that highlights its **single best feature or standout highlight** for this user.
         Focus on what makes it a great choice.
         For example: "Features the most powerful GPU in this list for gaming." or "Boasts a stunning OLED display ideal for creative work."
 
-        Return ONLY a JSON object with a single key "features" which is an array of exactly 5 strings, one for each laptop in the order they were provided.
-    `;
+        Return ONLY a JSON object with a single key "features" which is an array of exactly ${laptops.length} strings, one for each laptop in the order they were provided.
+        `;
 
     try {
-        const response = await ai.models.generateContent({
-            model: model,
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: {
-                    type: Type.OBJECT,
-                    properties: {
-                        features: {
-                            type: Type.ARRAY,
-                            items: { type: Type.STRING },
+        // Use fallback strategy for feature analysis
+        const response = await callWithFallback(apiKey, async (model) => {
+            return await ai.models.generateContent({
+                model: model,
+                contents: prompt,
+                config: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: Type.OBJECT,
+                        properties: {
+                            features: {
+                                type: Type.ARRAY,
+                                items: { type: Type.STRING },
+                            },
                         },
+                        required: ['features'],
                     },
-                    required: ['features'],
                 },
-            },
+            });
         });
 
-        const result = JSON.parse(response.text);
-        if (result.features && Array.isArray(result.features) && result.features.length === laptops.length) {
+        // Try to parse the response
+        let result;
+        try {
+            result = JSON.parse(response.text);
+        } catch (parseError) {
+            console.warn("Failed to parse JSON response for feature analysis:", response.text);
+            // Try to extract features from the text response directly
+            const lines = response.text.split('\n');
+            const features: string[] = [];
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (trimmed && !trimmed.startsWith('{') && !trimmed.startsWith('}') && !trimmed.includes('"features"') && trimmed.length > 10) {
+                    // This might be a feature description
+                    if (!trimmed.includes('Laptop') && !trimmed.includes(':') && trimmed.length > 20) {
+                        features.push(trimmed);
+                        if (features.length === laptops.length) break;
+                    }
+                }
+            }
+            
+            if (features.length === laptops.length) {
+                return features;
+            }
+            
+            // If we still can't get the right format, return fallback
+            throw new Error("Could not extract features from response");
+        }
+
+        // Validate the parsed result
+        if (result && result.features && Array.isArray(result.features) && result.features.length === laptops.length) {
             return result.features;
         } else {
-            throw new Error("AI response for feature analysis did not match the expected format.");
+            // Try to extract features from the text response directly
+            const lines = response.text.split('\n');
+            const features: string[] = [];
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (trimmed && !trimmed.startsWith('{') && !trimmed.startsWith('}') && !trimmed.includes('"features"') && trimmed.length > 10) {
+                    // This might be a feature description
+                    if (!trimmed.includes('Laptop') && !trimmed.includes(':') && trimmed.length > 20) {
+                        features.push(trimmed);
+                        if (features.length === laptops.length) break;
+                    }
+                }
+            }
+            
+            if (features.length === laptops.length) {
+                return features;
+            }
+            
+            throw new Error(`AI response for feature analysis did not match the expected format. Expected ${laptops.length} features, got ${result?.features?.length || 0}`);
         }
 
     } catch (error) {
