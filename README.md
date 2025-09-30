@@ -11,7 +11,7 @@
 
 **Professional AI-powered laptop recommendation assistant with Google Gemini**
 
-[✨ Features](#-features) • [🚀 Quick Start](#-quick-start) • [📖 Documentation](#-documentation) • [🤝 Contributing](#-contributing) • [💡 Examples](#-examples)
+[✨ Features](#-features) • [🚀 Quick Start](#-quick-start)
 
 </div>
 
