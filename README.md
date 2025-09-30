@@ -125,6 +125,11 @@ npm run dev
 | **Desktop App** | Electron | Cross-platform desktop application | 31.0.0+ |
 | **State Management** | React Hooks | Application state management | Built-in |
 | **Package Manager** | npm | Dependency management | 9.0.0+ |
+---
+
+### 🌟 Development Process
+
+This application was initially built using **Google AI Studio Apps Builder** which generated approximately 70% of the core functionality. The remaining 30% involved significant improvements, enhancements, and customizations From [ME](https://github.com/zSayf/) to create a polished, production-ready application with additional features and better user experience.
 
 ---
 
@@ -139,9 +144,9 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 
 **⭐ Star this repository if LaptoPilot helped you find your perfect laptop! ⭐**
 
-[![GitHub stars](https://img.shields.io/github/stars/zSayf/laptopilot?style=social)](https://github.com/zSayf/laptopilot/stargazers)
-[![GitHub forks](https://img.shields.io/github/forks/zSayf/laptopilot?style=social)](https://github.com/zSayf/laptopilot/network/members)
-[![GitHub issues](https://img.shields.io/github/issues/zSayf/laptopilot?style=social)](https://github.com/zSayf/laptopilot/issues)
+[![GitHub stars](https://img.shields.io/github/stars/zSayf/LaptoPilot?style=social)](https://github.com/zSayf/LaptoPilot/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/zSayf/LaptoPilot?style=social)](https://github.com/zSayf/LaptoPilot/network/members)
+[![GitHub issues](https://img.shields.io/github/issues/zSayf/LaptoPilot?style=social)](https://github.com/zSayf/LaptoPilot/issues)
 
 
 **Made with ❤️ for laptop shoppers everywhere**
