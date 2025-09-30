@@ -68,10 +68,19 @@ const App: React.FC = () => {
         if (isValid) {
           setIsApiKeyValid(true);
           setAppState('welcome'); // Skip API key setup if key is valid
+        } else {
+          // If validation fails, we'll show a notification but still allow access
+          // This could happen if the key was valid before but is now invalid
+          setIsApiKeyValid(false);
+          setAppState('welcome'); // Still go to welcome page but show option to change key
+          setError("Your saved API key appears to be invalid. You can change it using the 'Change API Key' button.");
         }
       }).catch(err => {
         console.error("Error validating saved API key:", err);
-        // If validation fails, we'll stay on the API key setup page
+        // If validation fails, we'll still go to welcome page but show option to change key
+        setIsApiKeyValid(false);
+        setAppState('welcome');
+        setError("There was an error validating your saved API key. You can change it using the 'Change API Key' button.");
       });
     }
   }, []);
@@ -149,6 +158,83 @@ const App: React.FC = () => {
     setAppState('chatting');
   };
   
+  // Add a helper function to handle function calls
+  const handleFunctionCall = async (match: RegExpMatchArray, responseText: string, functionCallRegex: RegExp) => {
+    // Extract function call parameters
+    const paramsString = match[1];
+    const paramRegex = /(\w+)=["']([^"']*)["']/g;
+    const params: Record<string, string> = {};
+    let paramMatch;
+    
+    while ((paramMatch = paramRegex.exec(paramsString)) !== null) {
+      params[paramMatch[1]] = paramMatch[2];
+    }
+    
+    // Extract budget value and currency
+    let budgetValue = 0;
+    let currencyValue = '';
+    if (params.budget) {
+      const budgetMatch = params.budget.match(/(\d+(?:\.\d+)?)\s*(\w+)/);
+      if (budgetMatch) {
+        budgetValue = parseFloat(budgetMatch[1]);
+        currencyValue = budgetMatch[2];
+      }
+    }
+    
+    // Create recommendation args
+    const recommendationArgs: RecommendationArgs = {
+      country: params.location || country,
+      budget: budgetValue,
+      currency: currencyValue,
+      primaryUse: params.primary_use || 'general',
+      specificNeeds: `Usage: ${params.usage_location || 'general'}, Battery: ${params.battery_life_importance || 'not specified'}, Screen: ${params.screen_size || 'not specified'} ${params.screen_refresh_rate || ''}`
+    };
+    
+    // Execute the function
+    setLoadingMessage(isEgypt ? 'جاري البحث عن أفضل الترشيحات...' : 'Finding the best recommendations...');
+    const { laptops, sources } = await getLaptopRecommendations(recommendationArgs, apiKey);
+    
+    // Add best features to laptops
+    if (laptops.length > 0) {
+      try {
+        const features = await analyzeBestFeatures(laptops, recommendationArgs, apiKey, isEgypt);
+        laptops.forEach((laptop, index) => {
+          laptop.bestFeature = features[index];
+        });
+      } catch (featureError) {
+        console.warn("Could not analyze best features:", featureError);
+        // Set a default message for all laptops if feature analysis fails
+        laptops.forEach((laptop) => {
+          laptop.bestFeature = "Feature analysis could not be generated due to API limitations.";
+        });
+      }
+      
+      // Try to get images for laptops
+      try {
+        await Promise.all(laptops.map(async (laptop) => {
+          const imageUrl = await generateLaptopImage(laptop.modelName, apiKey);
+          if (imageUrl) {
+            laptop.imageUrl = imageUrl;
+          }
+        }));
+      } catch (imageError) {
+        console.warn("Could not generate laptop images:", imageError);
+        // This is non-critical, so we continue without images
+      }
+    }
+    
+    // Update state with recommendations
+    setRecommendations(laptops);
+    setSources(sources);
+    setAppState('results');
+    
+    // Add the AI response to chat history
+    const aiResponseText = responseText.replace(functionCallRegex, '').trim() || 
+      (isEgypt ? "تمام كده! بما إن كل حاجة مظبوطة، دلوقتي هدورلك على أفضل الترشيحات اللي تناسب كل متطلباتك وميزانيتك." : 
+       "Great! Now I'll find the best laptop recommendations that match all your requirements and budget.");
+    setChatHistory(prev => [...prev, { role: 'model', text: aiResponseText }]);
+  };
+
   // Effect to start the AI conversation.
   useEffect(() => {
     const startAiConversation = async () => {
@@ -158,9 +244,9 @@ const App: React.FC = () => {
 
         let systemInstruction: string;
         if (isEgypt) {
-            systemInstruction = `You are "LaptoPilot", a friendly and expert AI assistant. You MUST communicate with the user exclusively in Egyptian Arabic. Your primary goal is to guide the user through a structured, multi-phase conversation to gather all necessary information to find the perfect laptop. The user has already set their budget to approximately ${budget} ${currency}. You MUST use this information and you MUST NOT ask for their budget again. You MUST follow these rules: 1. Follow the phases in order. Do not skip a phase. 2. Ask questions ONE AT A TIME. Do not ask multiple questions in a single message. 3. **For questions with multiple options, break them down into a series of simple 'yes' or 'no' questions. Ask about one feature at a time.** Use the following script as a strong guideline for your questions (but skip the budget question): **المرحلة الأولى: فهم الاستخدام الأساسي** 1. ابدأ بترحيب ودود ومباشر. ثم اسأل المستخدم عن استخدامه الأساسي للابتوب. * **مثال على الرسالة الأولى الممتازة:** "أهلاً بيك! عشان أساعدك تختار اللابتوب-Sah، قولي إيه استخدامك الأساسي ليه؟ (دراسة، شغل، جيمز، تصميم، أو استخدام يومي)" **المرحلة الثانية: التعمق في تفاصيل الاستخدام (أسئلة ديناميكية)** * لو جيمر: اسأل عن نوع الألعاب (تنافسية، AAA رسوميات عالية)، ثم اسأل لو يخطط للبث المباشر. * لو مبدع: اسأل عن مجاله الإبداعي (مونتاج فيديو 4K/1080p، تصميم جرافيك، 3D). * لو مبرمج: اسأل عن مهامه المتكررة (أنظمة وهمية VMs، عمل Compile لمشاريع ضخمة). **المرحلة الثالثة: أسلوب الحياة والتنقل** 1. اسأل أين سيستخدم اللابتوب أغلب الوقت (مكتب، تنقل، سفر دائم). 2. اسأل عن أهمية عمر البطارية. 3. اسأل عن حجم الشاشة المفضل. **المرحلة الرابعة: التفضيلات الشخصية والميزات الإضافية** 1. اسأل عن أولوياته في الشاشة سؤال سؤال (مثلاً: "هل معدل التحديث العالي للشاشة مهم بالنسبالك؟"). 2. اسأل عن تفضيلات الكيبورد بأسئلة نعم/لا (مثلاً: "هل محتاج لوحة أرقام Numpad في الكيبورد؟"). 3. اسأل عن المداخل (Ports) المهمة واحد واحد (مثلاً: "هل لازم يكون فيه مخرج HDMI؟"). **المرحلة الخامسة: التأكيد النهائي** 1. المستخدم في ${country} وميزانيته حوالي ${budget} ${currency}. 2. قدم ملخصًا لكل المتطلبات التي جمعتها. 3. اطلب منه التأكيد. 4. بمجرد أن يؤكد، يجب عليك استدعاء دالة \`findLaptopRecommendations\`. لا تقدم توصيات بنفسك.`;
+            systemInstruction = `You are "LaptoPilot", a friendly and expert AI assistant. You MUST communicate with the user exclusively in Egyptian Arabic. Your primary goal is to guide the user through a structured, multi-phase conversation to gather all necessary information to find the perfect laptop. The user has already set their budget to approximately ${budget} ${currency}. You MUST use this information and you MUST NOT ask for their budget again. You MUST follow these rules: 1. Follow the phases in order. Do not skip a phase. 2. Ask questions ONE AT A TIME. Do not ask multiple questions in a single message. 3. **For questions with multiple options, break them down into a series of simple 'yes' or 'no' questions. Ask about one feature at a time.** Use the following script as a strong guideline for your questions (but skip the budget question): **المرحلة الأولى: فهم الاستخدام الأساسي** 1. ابدأ بترحيب ودود ومباشر. ثم اسأل المستخدم عن استخدامه الأساسي للابتوب. * **مثال على الرسالة الأولى الممتازة:** "أهلاً بيك! عشان أساعدك تختار اللابتوب-Sah، قولي إيه استخدامك الأساسي ليه؟ (دراسة، شغل، جيمز، تصميم، أو استخدام يومي)" **المرحلة الثانية: التعمق في تفاصيل الاستخدام (أسئلة ديناميكية)** * لو جيمر: اسأل عن نوع الألعاب (تنافسية، AAA رسوميات عالية)، ثم اسأل لو يخطط للبث المباشر. * لو مبدع: اسأل عن مجاله الإبداعي (مونتاج فيديو 4K/1080p، تصميم جرافيك، 3D). * لو مبرمج: اسأل عن مهامه المتكررة (أنظمة وهمية VMs، عمل Compile لمشاريع ضخمة). **المرحلة الثالثة: أسلوب الحياة والتنقل** 1. اسأل أين سيستخدم اللابتوب أغلب الوقت (مكتب، تنقل، سفر دائم). 2. اسأل عن أهمية عمر البطارية. 3. اسأل عن حجم الشاشة المفضل. **المرحلة الرابعة: التفضيلات الشخصية والميزات الإضافية** 1. اسأل عن أولوياته في الشاشة سؤال سؤال (مثلاً: "هل معدل التحديث العالي للشاشة مهم بالنسبالك؟"). 2. اسأل عن تفضيلات الكيبورد بأسئلة نعم/لا (مثلاً: "هل محتاج لوحة أرقام Numpad في الكيبورد؟"). 3. اسأل عن المداخل (Ports) المهمة واحد واحد (مثلاً: "هل لازم يكون فيه مخرج HDMI؟"). **المرحلة الخامسة: التأكيد النهائي** 1. المستخدم في ${country} وميزانيته حوالي ${budget} ${currency}. 2. قدم ملخصًا لكل المتطلبات التي جمعتها. 3. اطلب منه التأكيد. 4. بمجرد أن يؤكد، يجب عليك استدعاء دالة \`findLaptopRecommendations\` مع كتابة الأمر كالتالي: <call:findLaptopRecommendations budget="${budget} ${currency}" location="${country}" primary_use="..." ... />. لا تقدم توصيات بنفسك.`;
         } else {
-            systemInstruction = `You are "LaptoPilot", a friendly and expert AI assistant that helps users find the perfect laptop. Your primary goal is to guide the user through a structured, multi-phase conversation to gather all necessary information. The user has already set their budget to approximately ${budget} ${currency}. You MUST use this information and you MUST NOT ask for their budget again. You MUST follow these rules: 1. Follow the phases in order. Do not skip a phase. 2. Ask questions ONE AT A TIME. Do not ask multiple questions in a single message. 3. **For questions with multiple options (like display features or ports), break them down into a series of simple 'yes' or 'no' questions. Ask about one feature at a time.** **Phase 1: The Icebreaker** 1. Introduce yourself and ask for the user's primary use case (e.g., Student, Professional, Gamer, Creative, Daily Use). **Phase 2: The Deep Dive (Ask questions relevant to the user's primary use)** * **If Gamer:** Ask about the types of games they play (e.g., Competitive FPS, AAA titles). Then ask if they plan to stream. * **If Creative:** Ask about their primary creative field (e.g., Video Editing 4K/1080p, Graphic Design, 3D Modeling). * **If Programmer:** Ask about their common tasks (e.g., running Virtual Machines, compiling large projects, web development). **Phase 3: Lifestyle & Portability** 1. Ask where they will use the laptop most (e.g., at a desk, commuting, traveling). 2. Ask about the importance of battery life on a scale of 1-5. 3. Ask for their preferred screen size (e.g., 13-14", 15-16", 17"+). **Phase 4: Finishing Touches** 1. Ask about display priorities one by one (e.g., "Is a high refresh rate important for smooth motion?"). 2. Ask about keyboard preferences using yes/no questions (e.g., "Do you need a keyboard with a number pad?"). 3. Ask about essential ports one by one (e.g., "Is an HDMI port a must-have for you?"). **Phase 5: Final Confirmation** 1. The user is in ${country} with a budget of ${budget} ${currency}. 2. Provide a concise summary of all the user's requirements you have gathered. 3. Ask for their confirmation. 4. Once they confirm, you MUST call the \`findLaptopRecommendations\` function with all the collected details including the budget. Do not provide recommendations yourself. Do not end the conversation without calling the function.`;
+            systemInstruction = `You are "LaptoPilot", a friendly and expert AI assistant that helps users find the perfect laptop. Your primary goal is to guide the user through a structured, multi-phase conversation to gather all necessary information. The user has already set their budget to approximately ${budget} ${currency}. You MUST use this information and you MUST NOT ask for their budget again. You MUST follow these rules: 1. Follow the phases in order. Do not skip a phase. 2. Ask questions ONE AT A TIME. Do not ask multiple questions in a single message. 3. **For questions with multiple options (like display features or ports), break them down into a series of simple 'yes' or 'no' questions. Ask about one feature at a time.** **Phase 1: The Icebreaker** 1. Introduce yourself and ask for the user's primary use case (e.g., Student, Professional, Gamer, Creative, Daily Use). **Phase 2: The Deep Dive (Ask questions relevant to the user's primary use)** * **If Gamer:** Ask about the types of games they play (e.g., Competitive FPS, AAA titles). Then ask if they plan to stream. * **If Creative:** Ask about their primary creative field (e.g., Video Editing 4K/1080p, Graphic Design, 3D Modeling). * **If Programmer:** Ask about their common tasks (e.g., running Virtual Machines, compiling large projects, web development). **Phase 3: Lifestyle & Portability** 1. Ask where they will use the laptop most (e.g., at a desk, commuting, traveling). 2. Ask about the importance of battery life on a scale of 1-5. 3. Ask for their preferred screen size (e.g., 13-14", 15-16", 17"+). **Phase 4: Finishing Touches** 1. Ask about display priorities one by one (e.g., "Is a high refresh rate important for smooth motion?"). 2. Ask about keyboard preferences using yes/no questions (e.g., "Do you need a keyboard with a number pad?"). 3. Ask about essential ports one by one (e.g., "Is an HDMI port a must-have for you?"). **Phase 5: Final Confirmation** 1. The user is in ${country} with a budget of ${budget} ${currency}. 2. Provide a concise summary of all the user's requirements you have gathered. 3. Ask for their confirmation. 4. Once they confirm, you MUST call the \`findLaptopRecommendations\` function with all the collected details including the budget by writing it as: <call:findLaptopRecommendations budget="${budget} ${currency}" location="${country}" primary_use="..." ... />. Do not provide recommendations yourself. Do not end the conversation without calling the function.`;
         }
 
         try {
@@ -171,7 +257,7 @@ const App: React.FC = () => {
           // Use generateContent for the first turn to establish history robustly.
           const ai = getAiInstance(apiKey);
           const firstTurnResult = await ai.models.generateContent({
-              model: 'gemini-2.5-flash',
+              model: 'gemini-2.5-pro', // Use the higher-tier model first
               contents: [{ role: 'user', parts: [{ text: initialUserMessageText }] }],
               config: {
                 systemInstruction,
@@ -183,11 +269,21 @@ const App: React.FC = () => {
               const modelResponseText = firstTurnResult.text;
               const modelResponseContent = firstTurnResult.candidates[0].content;
               
-              setChatHistory(prev => [...prev, { role: 'model', text: modelResponseText }]);
+              // Check if the response contains a function call
+              const functionCallRegex = /<call:findLaptopRecommendations\s+([^>]*)\/>/;
+              const match = modelResponseText.match(functionCallRegex);
+              
+              if (match) {
+                // Handle function call in initial response
+                await handleFunctionCall(match, modelResponseText, functionCallRegex);
+              } else {
+                // No function call, just add the response to chat history
+                setChatHistory(prev => [...prev, { role: 'model', text: modelResponseText }]);
+              }
 
               // Now, create the chat session with the established history.
               const newChat = ai.chats.create({
-                  model: 'gemini-2.5-flash',
+                  model: 'gemini-2.5-pro', // Use the higher-tier model first
                   config: {
                       systemInstruction,
                       tools: [], // We'll handle function calls differently
@@ -214,8 +310,8 @@ const App: React.FC = () => {
 
           if (apiError.toLowerCase().includes('quota')) {
             errorMessage = isEgypt 
-                ? "عذرًا، لقد استهلكت الحصة اليومية من الطلبات لهذا النموذج. لا توجد نماذج بديلة متاحة في الوقت الحالي. يرجى المحاولة مرة أخرى غدًا."
-                : "Sorry, you've reached the daily request limit for this model. No fallback models are currently available. Please try again tomorrow.";
+                ? "عذرًا، لقد استهلكت الحصة اليومية من الطلبات لهذا النموذج. جاري تجربة نموذج بديل تلقائيًا..."
+                : "Sorry, you've reached the daily request limit for this model. Trying fallback models automatically...";
           } else if (apiError.toLowerCase().includes('api_key')) {
             errorMessage = isEgypt
                 ? "مفتاح API غير صحيح أو مفقود. يرجى التحقق من الإعدادات."
@@ -251,15 +347,15 @@ ${recommendationContext}
 هدفك الجديد هو مساعدة المستخدم في تحليل هذه الخيارات.
 - أجب على أسئلته الإضافية حول هذه اللابتوبات المحددة.
 - قارن بين اللابتوبات بناءً على أسئلته (مثلاً: "أيهما أخف وزنًا؟"، "أيهما يمتلك شاشة أفضل للألعاب؟").
-- إذا لم يكن المستخدم راضيًا، يمكنك بدء بحث جديد عن طريق طرح أسئلات توضيحية ثم استدعاء دالة \`findLaptopRecommendations\` مرة أخرى بالمعايير المعدلة.
+- إذا لم يكن المستخدم راضيًا، يمكنك بدء بحث جديد عن طريق طرح أسئلات توضيحية ثم استدعاء دالة \`findLaptopRecommendations\` مرة أخرى بالمعايير المعدلة، مع كتابة الأمر كالتالي: <call:findLaptopRecommendations budget="..." location="..." primary_use="..." ... />.
 - استمر في التواصل باللغة العربية (اللهجة المصرية).`;
         } else {
-            systemInstruction = `You are "LaptoPilot", a friendly and expert AI assistant. You have already provided the user with the following top 5 laptop recommendations:\n${recommendationContext}\n\nYour new goal is to help the user analyze these options. - Answer their follow-up questions about these specific laptops. - Compare the laptops based on their questions (e.g., "Which is lighter?", "Which has a better screen for gaming?"). - If the user is unsatisfied, you can start a new search by asking clarifying questions and then calling the \`findLaptopRecommendations\` function again with the refined criteria.`;
+            systemInstruction = `You are "LaptoPilot", a friendly and expert AI assistant. You have already provided the user with the following top 5 laptop recommendations:\n${recommendationContext}\n\nYour new goal is to help the user analyze these options. - Answer their follow-up questions about these specific laptops. - Compare the laptops based on their questions (e.g., "Which is lighter?", "Which has a better screen for gaming?"). - If the user is unsatisfied, you can start a new search by asking clarifying questions and then calling the \`findLaptopRecommendations\` function again with the refined criteria, writing it as: <call:findLaptopRecommendations budget="..." location="..." primary_use="..." ... />.`;
         }
         
         const ai = getAiInstance(apiKey);
         const newChat = ai.chats.create({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-2.5-pro',
             config: {
                 systemInstruction,
                 tools: [], // We'll handle function calls differently
@@ -283,10 +379,18 @@ ${recommendationContext}
     try {
       const response = await chat.sendMessage({ message });
 
-      // For now, we'll handle the laptop recommendations differently
-      // In a real implementation, we would parse the response and call our functions
       if (response.text) {
-        setChatHistory(prev => [...prev, { role: 'model', text: response.text }]);
+        // Check if the response contains a function call
+        const functionCallRegex = /<call:findLaptopRecommendations\s+([^>]*)\/>/;
+        const match = response.text.match(functionCallRegex);
+        
+        if (match) {
+          // Handle function call in response
+          await handleFunctionCall(match, response.text, functionCallRegex);
+        } else {
+          // No function call, just add the response to chat history
+          setChatHistory(prev => [...prev, { role: 'model', text: response.text }]);
+        }
       } else {
         throw new Error("I received an unexpected response. Please try rephrasing your request.");
       }
@@ -303,8 +407,8 @@ ${recommendationContext}
 
       if (apiError.toLowerCase().includes('quota')) {
         errorMessage = isEgypt 
-            ? "عذرًا، لقد استهلكت الحصة اليومية من الطلبات لهذا النموذج. لا توجد نماذج بديلة متاحة في الوقت الحالي. يرجى المحاولة مرة أخرى غدًا."
-            : "Sorry, you've reached the daily request limit for this model. No fallback models are currently available. Please try again tomorrow.";
+            ? "عذرًا، لقد استهلكت الحصة اليومية من الطلبات لهذا النموذج. جاري تجربة نموذج بديل تلقائيًا..."
+            : "Sorry, you've reached the daily request limit for this model. Trying fallback models automatically...";
       } else if (apiError.toLowerCase().includes('api_key')) {
         errorMessage = isEgypt
             ? "مفتاح API غير صحيح أو مفقود. يرجى التحقق من الإعدادات."
@@ -317,8 +421,8 @@ ${recommendationContext}
     } finally {
         setLoadingMessage('');
     }
-  }, [chat, chatHistory, isEgypt, apiKey]);
-
+  }, [chat, chatHistory, isEgypt, apiKey, country, handleFunctionCall]);
+  
   const toggleFavorite = (laptop: Laptop) => {
     setFavorites(prev =>
       prev.find(fav => fav.modelName === laptop.modelName)
@@ -660,7 +764,7 @@ ${recommendationContext}
             border-radius: 0.5rem;
         }
       `}</style>
-      <Header onReset={handleReset} showReset={appState !== 'apiKeySetup' && appState !== 'welcome'} isEgypt={isEgypt} onChangeApiKey={handleChangeApiKey} />
+      <Header onReset={handleReset} showReset={appState !== 'apiKeySetup'} isEgypt={isEgypt} onChangeApiKey={handleChangeApiKey} />
       <ErrorNotification message={error} onDismiss={() => setError(null)} />
       <main ref={mainContentRef} className="flex-grow container mx-auto p-4 flex flex-col">
         {renderContent()}
