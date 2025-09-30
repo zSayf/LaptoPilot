@@ -1,0 +1,5 @@
+{
+  "name": "LaptoPilot",
+  "description": "Your Personal AI Co-Pilot for the Perfect Laptop. LaptoPilot uses an intelligent conversational AI and real-time web search to provide personalized, localized laptop recommendations, saving you from hours of research and decision fatigue.",
+  "requestFramePermissions": []
+}
