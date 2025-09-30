@@ -11,7 +11,7 @@
 
 **Professional AI-powered laptop recommendation assistant with Google Gemini**
 
-[✨ Features](#-features) • [🚀 Quick Start](#-quick-start)
+ [🚀 Quick Start](#-quick-start)
 
 </div>
 
@@ -28,6 +28,28 @@ LaptoPilot is a **production-ready, AI-powered laptop recommendation assistant**
 - **🔒 Privacy Focused**: API keys stored locally, no data transmission beyond necessary AI requests
 - **⚡ Lightning Fast**: Real-time recommendations with smooth conversational flow
 - **💻 Cross-Platform**: Works on Windows, macOS, and Linux as both web app and desktop application
+
+---
+## 📸 Screenshots
+
+<div align="center">
+
+### 🏠 Welcome Screen
+*Country and budget selection with clean, intuitive interface*
+
+![Welcome Screen](https://github.com/zSayf/LaptoPilot/blob/main/Assests/Home%20Page.png)
+
+### 💬 AI Chat Interface
+*Conversational AI gathering user requirements*
+
+![AI Chat Interface](https://github.com/zSayf/LaptoPilot/blob/main/Assests/Ai%20Chat.png)
+
+### 💻 Laptop Recommendations
+*Detailed laptop recommendations with specifications and feature highlights*
+
+![Laptop Recommendations](https://github.com/zSayf/LaptoPilot/blob/main/Assests/recommendation.png)
+
+</div>
 
 ---
 
@@ -106,28 +128,6 @@ npm run dev
 
 ---
 
-## 📸 Screenshots
-
-<div align="center">
-
-### 🏠 Welcome Screen
-*Country and budget selection with clean, intuitive interface*
-
-![Welcome Screen](https://github.com/zSayf/LaptoPilot/blob/main/Assests/Home%20Page.png)
-
-### 💬 AI Chat Interface
-*Conversational AI gathering user requirements*
-
-![AI Chat Interface](https://github.com/zSayf/LaptoPilot/blob/main/Assests/Ai%20Chat.png)
-
-### 💻 Laptop Recommendations
-*Detailed laptop recommendations with specifications and feature highlights*
-
-![Laptop Recommendations](https://github.com/zSayf/LaptoPilot/blob/main/Assests/recommendation.png)
-
-</div>
-
----
 
 ## 📄 License
 
@@ -139,9 +139,10 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 
 **⭐ Star this repository if LaptoPilot helped you find your perfect laptop! ⭐**
 
-[![GitHub stars](https://img.shields.io/github/stars/zSayf/laptopilot.svg?style=social&label=Star)](https://github.com/zSayf/laptopilot)
-[![GitHub forks](https://img.shields.io/github/forks/zSayf/laptopilot.svg?style=social&label=Fork)](https://github.com/zSayf/laptopilot/fork)
-[![GitHub watchers](https://img.shields.io/github/watchers/zSayf/laptopilot.svg?style=social&label=Watch)](https://github.com/zSayf/laptopilot/subscription)
+[![GitHub stars](https://img.shields.io/github/stars/zSayf/laptopilot?style=social)](https://github.com/zSayf/laptopilot/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/zSayf/laptopilot?style=social)](https://github.com/zSayf/laptopilot/network/members)
+[![GitHub issues](https://img.shields.io/github/issues/zSayf/laptopilot?style=social)](https://github.com/zSayf/laptopilot/issues)
+
 
 **Made with ❤️ for laptop shoppers everywhere**
 
