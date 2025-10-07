@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import type { Chat, ChatMessage, Laptop, AppState, GroundingSource, RecommendationArgs, Country } from './types';
 import { getLaptopRecommendations, generateLaptopImage, analyzeBestFeatures, validateApiKey, getAiInstance } from './services/geminiService';
@@ -12,9 +13,10 @@ type Direction = 'ltr' | 'rtl';
 interface ErrorNotificationProps {
   message: string | null;
   onDismiss: () => void;
+  onRetry?: () => void;
 }
 
-const ErrorNotification: React.FC<ErrorNotificationProps> = ({ message, onDismiss }) => {
+const ErrorNotification: React.FC<ErrorNotificationProps> = ({ message, onDismiss, onRetry }) => {
   if (!message) return null;
 
   return (
@@ -26,11 +28,22 @@ const ErrorNotification: React.FC<ErrorNotificationProps> = ({ message, onDismis
         <ErrorIcon className="w-6 h-6 mr-3 mt-0.5 flex-shrink-0" />
         <p className="text-sm font-medium">{message}</p>
       </div>
-      <button onClick={onDismiss} className="-mt-1 -mr-1 p-1 rounded-full hover:bg-red-700 transition-colors" aria-label="Dismiss">
-        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-        </svg>
-      </button>
+       <div className="flex items-center space-x-2 flex-shrink-0 ml-4">
+        {onRetry && (
+            <button
+                onClick={onRetry}
+                className="px-3 py-1 text-xs font-bold uppercase rounded-md bg-white/10 hover:bg-white/20 transition-colors"
+                aria-label="Retry"
+            >
+                Retry
+            </button>
+        )}
+        <button onClick={onDismiss} className="p-1 rounded-full hover:bg-red-700 transition-colors" aria-label="Dismiss">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+        </button>
+      </div>
     </div>
   );
 };
@@ -55,6 +68,7 @@ const App: React.FC = () => {
 
   const userArgs = useRef<RecommendationArgs | null>(null);
   const mainContentRef = useRef<HTMLElement>(null);
+  const retryAction = useRef<(() => void) | null>(null);
   
   const isEgypt = country === 'Egypt';
 
@@ -101,6 +115,19 @@ const App: React.FC = () => {
     setApiKey(e.target.value);
     setIsApiKeyValid(false); // Reset validation when user types
   };
+  
+  const handleDismissError = () => {
+    setError(null);
+    retryAction.current = null;
+  };
+
+  const handleRetry = () => {
+      const actionToRetry = retryAction.current;
+      handleDismissError();
+      if (actionToRetry) {
+          actionToRetry();
+      }
+  };
 
   const handleApiKeySubmit = async () => {
     if (!apiKey.trim()) {
@@ -109,6 +136,8 @@ const App: React.FC = () => {
     }
 
     setLoadingMessage('Validating API key...');
+    setError(null);
+    retryAction.current = null;
     try {
       const isValid = await validateApiKey(apiKey);
       if (isValid) {
@@ -123,6 +152,7 @@ const App: React.FC = () => {
       }
     } catch (err) {
       setError("Error validating API key. Please try again.");
+      retryAction.current = handleApiKeySubmit;
       console.error("API key validation error:", err);
     } finally {
       setLoadingMessage('');
@@ -159,7 +189,7 @@ const App: React.FC = () => {
   };
   
   // Add a helper function to handle function calls
-  const handleFunctionCall = async (match: RegExpMatchArray, responseText: string, functionCallRegex: RegExp) => {
+  const handleFunctionCall = useCallback(async (match: RegExpMatchArray, responseText: string, functionCallRegex: RegExp) => {
     // Extract function call parameters
     const paramsString = match[1];
     const paramRegex = /(\w+)=["']([^"']*)["']/g;
@@ -191,12 +221,13 @@ const App: React.FC = () => {
     };
     
     // Execute the function
-    setLoadingMessage(isEgypt ? 'جاري البحث عن أفضل الترشيحات...' : 'Finding the best recommendations...');
+    setLoadingMessage(isEgypt ? 'جاري البحث في الويب عن لابتوبات...' : 'Searching the web for laptops...');
     const { laptops, sources } = await getLaptopRecommendations(recommendationArgs, apiKey);
     
     // Add best features to laptops
     if (laptops.length > 0) {
       try {
+        setLoadingMessage(isEgypt ? 'جاري تحليل أبرز الميزات...' : 'Analyzing best features...');
         const features = await analyzeBestFeatures(laptops, recommendationArgs, apiKey, isEgypt);
         laptops.forEach((laptop, index) => {
           laptop.bestFeature = features[index];
@@ -211,6 +242,7 @@ const App: React.FC = () => {
       
       // Try to get images for laptops
       try {
+        setLoadingMessage(isEgypt ? 'جاري جلب صور المنتجات...' : 'Fetching product images...');
         await Promise.all(laptops.map(async (laptop) => {
           const imageUrl = await generateLaptopImage(laptop.modelName, apiKey);
           if (imageUrl) {
@@ -233,106 +265,108 @@ const App: React.FC = () => {
       (isEgypt ? "تمام كده! بما إن كل حاجة مظبوطة، دلوقتي هدورلك على أفضل الترشيحات اللي تناسب كل متطلباتك وميزانيتك." : 
        "Great! Now I'll find the best laptop recommendations that match all your requirements and budget.");
     setChatHistory(prev => [...prev, { role: 'model', text: aiResponseText }]);
-  };
+  }, [apiKey, country, isEgypt]);
 
-  // Effect to start the AI conversation.
-  useEffect(() => {
-    const startAiConversation = async () => {
-      if (appState === 'chatting' && !chat && isApiKeyValid) {
-        setLoadingMessage(isEgypt ? 'بوقظ الذكاء الاصطناعي...' : 'Waking up the AI...');
-        setError(null);
+  const startAiConversation = useCallback(async () => {
+    setLoadingMessage(isEgypt ? 'بوقظ الذكاء الاصطناعي...' : 'Waking up the AI...');
+    setError(null);
+    retryAction.current = null;
 
-        let systemInstruction: string;
-        if (isEgypt) {
-            systemInstruction = `You are "LaptoPilot", a friendly and expert AI assistant. You MUST communicate with the user exclusively in Egyptian Arabic. Your primary goal is to guide the user through a structured, multi-phase conversation to gather all necessary information to find the perfect laptop. The user has already set their budget to approximately ${budget} ${currency}. You MUST use this information and you MUST NOT ask for their budget again. You MUST follow these rules: 1. Follow the phases in order. Do not skip a phase. 2. Ask questions ONE AT A TIME. Do not ask multiple questions in a single message. 3. **For questions with multiple options, break them down into a series of simple 'yes' or 'no' questions. Ask about one feature at a time.** Use the following script as a strong guideline for your questions (but skip the budget question): **المرحلة الأولى: فهم الاستخدام الأساسي** 1. ابدأ بترحيب ودود ومباشر. ثم اسأل المستخدم عن استخدامه الأساسي للابتوب. * **مثال على الرسالة الأولى الممتازة:** "أهلاً بيك! عشان أساعدك تختار اللابتوب-Sah، قولي إيه استخدامك الأساسي ليه؟ (دراسة، شغل، جيمز، تصميم، أو استخدام يومي)" **المرحلة الثانية: التعمق في تفاصيل الاستخدام (أسئلة ديناميكية)** * لو جيمر: اسأل عن نوع الألعاب (تنافسية، AAA رسوميات عالية)، ثم اسأل لو يخطط للبث المباشر. * لو مبدع: اسأل عن مجاله الإبداعي (مونتاج فيديو 4K/1080p، تصميم جرافيك، 3D). * لو مبرمج: اسأل عن مهامه المتكررة (أنظمة وهمية VMs، عمل Compile لمشاريع ضخمة). **المرحلة الثالثة: أسلوب الحياة والتنقل** 1. اسأل أين سيستخدم اللابتوب أغلب الوقت (مكتب، تنقل، سفر دائم). 2. اسأل عن أهمية عمر البطارية. 3. اسأل عن حجم الشاشة المفضل. **المرحلة الرابعة: التفضيلات الشخصية والميزات الإضافية** 1. اسأل عن أولوياته في الشاشة سؤال سؤال (مثلاً: "هل معدل التحديث العالي للشاشة مهم بالنسبالك؟"). 2. اسأل عن تفضيلات الكيبورد بأسئلة نعم/لا (مثلاً: "هل محتاج لوحة أرقام Numpad في الكيبورد؟"). 3. اسأل عن المداخل (Ports) المهمة واحد واحد (مثلاً: "هل لازم يكون فيه مخرج HDMI؟"). **المرحلة الخامسة: التأكيد النهائي** 1. المستخدم في ${country} وميزانيته حوالي ${budget} ${currency}. 2. قدم ملخصًا لكل المتطلبات التي جمعتها. 3. اطلب منه التأكيد. 4. بمجرد أن يؤكد، يجب عليك استدعاء دالة \`findLaptopRecommendations\` مع كتابة الأمر كالتالي: <call:findLaptopRecommendations budget="${budget} ${currency}" location="${country}" primary_use="..." ... />. لا تقدم توصيات بنفسك.`;
-        } else {
-            systemInstruction = `You are "LaptoPilot", a friendly and expert AI assistant that helps users find the perfect laptop. Your primary goal is to guide the user through a structured, multi-phase conversation to gather all necessary information. The user has already set their budget to approximately ${budget} ${currency}. You MUST use this information and you MUST NOT ask for their budget again. You MUST follow these rules: 1. Follow the phases in order. Do not skip a phase. 2. Ask questions ONE AT A TIME. Do not ask multiple questions in a single message. 3. **For questions with multiple options (like display features or ports), break them down into a series of simple 'yes' or 'no' questions. Ask about one feature at a time.** **Phase 1: The Icebreaker** 1. Introduce yourself and ask for the user's primary use case (e.g., Student, Professional, Gamer, Creative, Daily Use). **Phase 2: The Deep Dive (Ask questions relevant to the user's primary use)** * **If Gamer:** Ask about the types of games they play (e.g., Competitive FPS, AAA titles). Then ask if they plan to stream. * **If Creative:** Ask about their primary creative field (e.g., Video Editing 4K/1080p, Graphic Design, 3D Modeling). * **If Programmer:** Ask about their common tasks (e.g., running Virtual Machines, compiling large projects, web development). **Phase 3: Lifestyle & Portability** 1. Ask where they will use the laptop most (e.g., at a desk, commuting, traveling). 2. Ask about the importance of battery life on a scale of 1-5. 3. Ask for their preferred screen size (e.g., 13-14", 15-16", 17"+). **Phase 4: Finishing Touches** 1. Ask about display priorities one by one (e.g., "Is a high refresh rate important for smooth motion?"). 2. Ask about keyboard preferences using yes/no questions (e.g., "Do you need a keyboard with a number pad?"). 3. Ask about essential ports one by one (e.g., "Is an HDMI port a must-have for you?"). **Phase 5: Final Confirmation** 1. The user is in ${country} with a budget of ${budget} ${currency}. 2. Provide a concise summary of all the user's requirements you have gathered. 3. Ask for their confirmation. 4. Once they confirm, you MUST call the \`findLaptopRecommendations\` function with all the collected details including the budget by writing it as: <call:findLaptopRecommendations budget="${budget} ${currency}" location="${country}" primary_use="..." ... />. Do not provide recommendations yourself. Do not end the conversation without calling the function.`;
-        }
+    let systemInstruction: string;
+    if (isEgypt) {
+        systemInstruction = `You are "LaptoPilot", a friendly and expert AI assistant. You MUST communicate with the user exclusively in Egyptian Arabic. Your primary goal is to guide the user through a structured, multi-phase conversation to gather all necessary information to find the perfect laptop. The user has already set their budget to approximately ${budget} ${currency}. You MUST use this information and you MUST NOT ask for their budget again. You MUST follow these rules: 1. Follow the phases in order. Do not skip a phase. 2. Ask questions ONE AT A TIME. Do not ask multiple questions in a single message. 3. **For questions with multiple options, break them down into a series of simple 'yes' or 'no' questions. Ask about one feature at a time.** Use the following script as a strong guideline for your questions (but skip the budget question): **المرحلة الأولى: فهم الاستخدام الأساسي** 1. ابدأ بترحيب ودود ومباشر. ثم اسأل المستخدم عن استخدامه الأساسي للابتوب. * **مثال على الرسالة الأولى الممتازة:** "أهلاً بيك! عشان أساعدك تختار اللابتوب-Sah، قولي إيه استخدامك الأساسي ليه؟ (دراسة، شغل، جيمز، تصميم، أو استخدام يومي)" **المرحلة الثانية: التعمق في تفاصيل الاستخدام (أسئلة ديناميكية)** * لو جيمر: اسأل عن نوع الألعاب (تنافسية، AAA رسوميات عالية)، ثم اسأل لو يخطط للبث المباشر. * لو مبدع: اسأل عن مجاله الإبداعي (مونتاج فيديو 4K/1080p، تصميم جرافيك، 3D). * لو مبرمج: اسأل عن مهامه المتكررة (أنظمة وهمية VMs، عمل Compile لمشاريع ضخمة). **المرحلة الثالثة: أسلوب الحياة والتنقل** 1. اسأل أين سيستخدم اللابتوب أغلب الوقت (مكتب، تنقل، سفر دائم). 2. اسأل عن أهمية عمر البطارية. 3. اسأل عن حجم الشاشة المفضل. **المرحلة الرابعة: التفضيلات الشخصية والميزات الإضافية** 1. اسأل عن أولوياته في الشاشة سؤال سؤال (مثلاً: "هل معدل التحديث العالي للشاشة مهم بالنسبالك؟"). 2. اسأل عن تفضيلات الكيبورد بأسئلة نعم/لا (مثلاً: "هل محتاج لوحة أرقام Numpad في الكيبورد؟"). 3. اسأل عن المداخل (Ports) المهمة واحد واحد (مثلاً: "هل لازم يكون فيه مخرج HDMI؟"). **المرحلة الخامسة: التأكيد النهائي** 1. المستخدم في ${country} وميزانيته حوالي ${budget} ${currency}. 2. قدم ملخصًا لكل المتطلبات التي جمعتها. 3. اطلب منه التأكيد. 4. بمجرد أن يؤكد، يجب عليك استدعاء دالة \`findLaptopRecommendations\` مع كتابة الأمر كالتالي: <call:findLaptopRecommendations budget="${budget} ${currency}" location="${country}" primary_use="..." ... />. لا تقدم توصيات بنفسك.`;
+    } else {
+        systemInstruction = `You are "LaptoPilot", a friendly and expert AI assistant that helps users find the perfect laptop. Your primary goal is to guide the user through a structured, multi-phase conversation to gather all necessary information. The user has already set their budget to approximately ${budget} ${currency}. You MUST use this information and you MUST NOT ask for their budget again. You MUST follow these rules: 1. Follow the phases in order. Do not skip a phase. 2. Ask questions ONE AT A TIME. Do not ask multiple questions in a single message. 3. **For questions with multiple options (like display features or ports), break them down into a series of simple 'yes' or 'no' questions. Ask about one feature at a time.** **Phase 1: The Icebreaker** 1. Introduce yourself and ask for the user's primary use case (e.g., Student, Professional, Gamer, Creative, Daily Use). **Phase 2: The Deep Dive (Ask questions relevant to the user's primary use)** * **If Gamer:** Ask about the types of games they play (e.g., Competitive FPS, AAA titles). Then ask if they plan to stream. * **If Creative:** Ask about their primary creative field (e.g., Video Editing 4K/1080p, Graphic Design, 3D Modeling). * **If Programmer:** Ask about their common tasks (e.g., running Virtual Machines, compiling large projects, web development). **Phase 3: Lifestyle & Portability** 1. Ask where they will use the laptop most (e.g., at a desk, commuting, traveling). 2. Ask about the importance of battery life on a scale of 1-5. 3. Ask for their preferred screen size (e.g., 13-14", 15-16", 17"+). **Phase 4: Finishing Touches** 1. Ask about display priorities one by one (e.g., "Is a high refresh rate important for smooth motion?"). 2. Ask about keyboard preferences using yes/no questions (e.g., "Do you need a keyboard with a number pad?"). 3. Ask about essential ports one by one (e.g., "Is an HDMI port a must-have for you?"). **Phase 5: Final Confirmation** 1. The user is in ${country} with a budget of ${budget} ${currency}. 2. Provide a concise summary of all the user's requirements you have gathered. 3. Ask for their confirmation. 4. Once they confirm, you MUST call the \`findLaptopRecommendations\` function with all the collected details including the budget by writing it as: <call:findLaptopRecommendations budget="${budget} ${currency}" location="${country}" primary_use="..." ... />. Do not provide recommendations yourself. Do not end the conversation without calling the function.`;
+    }
 
-        try {
-          const initialUserMessageText = isEgypt ? "أهلاً، يلا نبدأ." : "Hello, let's get started.";
-          const initialUserMessage: ChatMessage = { role: 'user', text: initialUserMessageText };
-          setChatHistory([initialUserMessage]);
+    try {
+      const initialUserMessageText = isEgypt ? "أهلاً، يلا نبدأ." : "Hello, let's get started.";
+      const initialUserMessage: ChatMessage = { role: 'user', text: initialUserMessageText };
+      setChatHistory([initialUserMessage]);
 
-          // Use generateContent for the first turn to establish history robustly.
-          const ai = getAiInstance(apiKey);
-          const firstTurnResult = await ai.models.generateContent({
+      // Use generateContent for the first turn to establish history robustly.
+      const ai = getAiInstance(apiKey);
+      const firstTurnResult = await ai.models.generateContent({
+          model: 'gemini-2.5-pro', // Use the higher-tier model first
+          contents: [{ role: 'user', parts: [{ text: initialUserMessageText }] }],
+          config: {
+            systemInstruction,
+            tools: [], // We'll handle function calls differently
+          },
+      });
+
+      if (firstTurnResult.text && firstTurnResult.candidates?.[0]?.content) {
+          const modelResponseText = firstTurnResult.text;
+          const modelResponseContent = firstTurnResult.candidates[0].content;
+          
+          // Check if the response contains a function call
+          const functionCallRegex = /<call:findLaptopRecommendations\s+([^>]*)\/>/;
+          const match = modelResponseText.match(functionCallRegex);
+          
+          if (match) {
+            // Handle function call in initial response
+            await handleFunctionCall(match, modelResponseText, functionCallRegex);
+          } else {
+            // No function call, just add the response to chat history
+            setChatHistory(prev => [...prev, { role: 'model', text: modelResponseText }]);
+          }
+
+          // Now, create the chat session with the established history.
+          const newChat = ai.chats.create({
               model: 'gemini-2.5-pro', // Use the higher-tier model first
-              contents: [{ role: 'user', parts: [{ text: initialUserMessageText }] }],
               config: {
-                systemInstruction,
-                tools: [], // We'll handle function calls differently
+                  systemInstruction,
+                  tools: [], // We'll handle function calls differently
               },
+              history: [
+                  { role: 'user', parts: [{ text: initialUserMessageText }] },
+                  modelResponseContent,
+              ],
           });
+          setChat(newChat);
+      } else {
+          throw new Error("The AI didn't respond. Please try starting over.");
+      }
 
-          if (firstTurnResult.text && firstTurnResult.candidates?.[0]?.content) {
-              const modelResponseText = firstTurnResult.text;
-              const modelResponseContent = firstTurnResult.candidates[0].content;
-              
-              // Check if the response contains a function call
-              const functionCallRegex = /<call:findLaptopRecommendations\s+([^>]*)\/>/;
-              const match = modelResponseText.match(functionCallRegex);
-              
-              if (match) {
-                // Handle function call in initial response
-                await handleFunctionCall(match, modelResponseText, functionCallRegex);
-              } else {
-                // No function call, just add the response to chat history
-                setChatHistory(prev => [...prev, { role: 'model', text: modelResponseText }]);
-              }
+    } catch (e) {
+      console.error("Failed to start conversation:", e);
+      
+      let apiError = e instanceof Error ? e.message : '';
+      let errorMessage: string;
+      let isRetryable = false;
 
-              // Now, create the chat session with the established history.
-              const newChat = ai.chats.create({
-                  model: 'gemini-2.5-pro', // Use the higher-tier model first
-                  config: {
-                      systemInstruction,
-                      tools: [], // We'll handle function calls differently
-                  },
-                  history: [
-                      { role: 'user', parts: [{ text: initialUserMessageText }] },
-                      modelResponseContent,
-                  ],
-              });
-              setChat(newChat);
-          } else {
-              throw new Error("The AI didn't respond. Please try starting over.");
-          }
+      if (apiError.toLowerCase().includes('api_key')) {
+        errorMessage = isEgypt
+            ? "مفتاح API غير صحيح أو مفقود. يرجى التحقق من الإعدادات."
+            : "Invalid or missing API key. Please check your configuration.";
+        isRetryable = false;
+      } else {
+        errorMessage = isEgypt 
+            ? "حدث خطأ في الاتصال بالذكاء الاصطناعي. برجاء التحقق من اتصالك بالإنترنت والمحاولة مرة أخرى." 
+            : "There was a problem communicating with the AI. Please check your internet connection and try again.";
+        isRetryable = true;
+      }
 
-        } catch (e) {
-          console.error("Failed to start conversation:", e);
-          
-          let apiError = '';
-          if (e instanceof Error) {
-              apiError = e.message;
-          }
-          
-          let errorMessage: string;
-
-          if (apiError.toLowerCase().includes('quota')) {
-            errorMessage = isEgypt 
-                ? "عذرًا، لقد استهلكت الحصة اليومية من الطلبات لهذا النموذج. جاري تجربة نموذج بديل تلقائيًا..."
-                : "Sorry, you've reached the daily request limit for this model. Trying fallback models automatically...";
-          } else if (apiError.toLowerCase().includes('api_key')) {
-            errorMessage = isEgypt
-                ? "مفتاح API غير صحيح أو مفقود. يرجى التحقق من الإعدادات."
-                : "Invalid or missing API key. Please check your configuration.";
-          } else {
-            errorMessage = isEgypt 
-                ? "حدث خطأ في الاتصال بالذكاء الاصطناعي. برجاء التحقق من اتصالك بالإنترنت والمحاولة مرة أخرى." 
-                : "There was a problem communicating with the AI. Please check your internet connection and try again.";
-          }
-
-          setError(errorMessage);
+      setError(errorMessage);
+      if (isRetryable) {
+          retryAction.current = startAiConversation;
+      } else {
+          retryAction.current = null;
           setChatHistory([]);
           setAppState('welcome'); // Go back to welcome screen on failure
           setChat(null); // Ensure chat is reset
-        } finally {
-          setLoadingMessage('');
-        }
       }
-    };
-    startAiConversation();
-  }, [appState, country, budget, currency, isEgypt, apiKey, isApiKeyValid]);
+    } finally {
+      setLoadingMessage('');
+    }
+  }, [apiKey, isEgypt, budget, currency, country, handleFunctionCall]);
+
+  // Effect to start the AI conversation.
+  useEffect(() => {
+    if (appState === 'chatting' && !chat && isApiKeyValid) {
+        startAiConversation();
+    }
+  }, [appState, chat, isApiKeyValid, startAiConversation]);
 
   // Effect to create a *new* chat session when results are displayed, to handle the context change.
   useEffect(() => {
@@ -375,6 +409,7 @@ ${recommendationContext}
     setChatHistory(updatedHistory);
     setLoadingMessage(isEgypt ? 'بفكر...' : 'Thinking...');
     setError(null);
+    retryAction.current = null;
 
     try {
       const response = await chat.sendMessage({ message });
@@ -397,27 +432,29 @@ ${recommendationContext}
 
     } catch (e) {
       console.error("Error during chat:", e);
+      // Revert optimistic update on failure
+      setChatHistory(chatHistory);
 
-      let apiError = '';
-      if (e instanceof Error) {
-        apiError = e.message;
-      }
-      
+      let apiError = e instanceof Error ? e.message : '';
       let errorMessage: string;
+      let isRetryable = false;
 
-      if (apiError.toLowerCase().includes('quota')) {
-        errorMessage = isEgypt 
-            ? "عذرًا، لقد استهلكت الحصة اليومية من الطلبات لهذا النموذج. جاري تجربة نموذج بديل تلقائيًا..."
-            : "Sorry, you've reached the daily request limit for this model. Trying fallback models automatically...";
-      } else if (apiError.toLowerCase().includes('api_key')) {
+      if (apiError.toLowerCase().includes('api_key')) {
         errorMessage = isEgypt
             ? "مفتاح API غير صحيح أو مفقود. يرجى التحقق من الإعدادات."
             : "Invalid or missing API key. Please check your configuration.";
+        isRetryable = false;
       } else {
-          errorMessage = e instanceof Error ? e.message : (isEgypt ? 'حدث خطأ غير معروف. برجاء إعادة صياغة رسالتك أو الضغط على "ابدأ من جديد".' : 'An unknown error occurred. Please try rephrasing your message or click "Start Over".');
+          errorMessage = e instanceof Error ? e.message : (isEgypt ? 'حدث خطأ غير معروف. برجاء المحاولة مرة أخرى أو الضغط على "ابدأ من جديد".' : 'An unknown error occurred. Please try again or click "Start Over".');
+          isRetryable = true;
       }
       
       setError(errorMessage);
+      if (isRetryable) {
+          retryAction.current = () => handleSendMessage(message);
+      } else {
+          retryAction.current = null;
+      }
     } finally {
         setLoadingMessage('');
     }
@@ -445,6 +482,7 @@ ${recommendationContext}
     setError(null);
     setLoadingMessage('');
     userArgs.current = null;
+    retryAction.current = null;
   };
 
   const handleChangeApiKey = () => {
@@ -496,12 +534,6 @@ ${recommendationContext}
               >
                 {loadingMessage ? loadingMessage : 'Validate and Continue'}
               </button>
-              
-              {error && (
-                <div className="text-red-400 text-sm text-center">
-                  {error}
-                </div>
-              )}
             </div>
           </div>
         );
@@ -763,9 +795,33 @@ ${recommendationContext}
             animation: skeleton-loading 1.5s infinite ease-in-out;
             border-radius: 0.5rem;
         }
+        @keyframes heart-pop {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.3); }
+            100% { transform: scale(1); }
+        }
+        .animate-heart-pop {
+            animation: heart-pop 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+        @keyframes button-press {
+            0% { transform: scale(1); }
+            50% { transform: scale(0.9); }
+            100% { transform: scale(1); }
+        }
+        .animate-button-press {
+            animation: button-press 0.3s ease-out;
+        }
+        @keyframes check-pop-in {
+            0% { transform: scale(0.5) rotate(-180deg); opacity: 0; }
+            70% { transform: scale(1.2) rotate(10deg); opacity: 1; }
+            100% { transform: scale(1) rotate(0deg); opacity: 1; }
+        }
+        .animate-check-pop-in {
+            animation: check-pop-in 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
       `}</style>
       <Header onReset={handleReset} showReset={appState !== 'apiKeySetup'} isEgypt={isEgypt} onChangeApiKey={handleChangeApiKey} />
-      <ErrorNotification message={error} onDismiss={() => setError(null)} />
+      <ErrorNotification message={error} onDismiss={handleDismissError} onRetry={retryAction.current ? handleRetry : undefined} />
       <main ref={mainContentRef} className="flex-grow container mx-auto p-4 flex flex-col">
         {renderContent()}
       </main>
