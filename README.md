@@ -2,12 +2,11 @@
 
 <div align="center">
 
-![LaptoPilot](https://img.shields.io/badge/LaptoPilot-v1.0.0-2196F3?style=for-the-badge&logo=react&logoColor=white)
+![LaptoPilot](https://img.shields.io/badge/LaptoPilot-v2.0.0-2196F3?style=for-the-badge&logo=react&logoColor=white)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
-[![React](https://img.shields.io/badge/React-18+-61DAFB?style=flat-square&logo=react&logoColor=white)](https://reactjs.org/)
+[![React](https://img.shields.io/badge/React-19+-61DAFB?style=flat-square&logo=react&logoColor=white)](https://reactjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5+-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Electron](https://img.shields.io/badge/Electron-31+-47848F?style=flat-square&logo=electron&logoColor=white)](https://www.electronjs.org/)
 
 **Professional AI-powered laptop recommendation assistant with Google Gemini**
 
@@ -27,7 +26,7 @@ LaptoPilot is a **production-ready, AI-powered laptop recommendation assistant**
 - **🎨 Modern Professional UI**: Beautiful React/Tailwind CSS interface with responsive design
 - **🔒 Privacy Focused**: API keys stored locally, no data transmission beyond necessary AI requests
 - **⚡ Lightning Fast**: Real-time recommendations with smooth conversational flow
-- **💻 Cross-Platform**: Works on Windows, macOS, and Linux as both web app and desktop application
+- **📱 Web-Only Approach**: Streamlined web application with no desktop installation required
 
 ---
 ## 📸 Screenshots
@@ -118,11 +117,10 @@ npm run dev
 | Component | Technology | Purpose | Version |
 |-----------|------------|---------|---------|
 | **AI Engine** | Google Gemini 2.5 Flash | Intelligent recommendations | Latest |
-| **Frontend Framework** | React 18+ | Modern web interface | 18.2.0+ |
-| **Language** | TypeScript 5+ | Type safety and developer experience | 5.0.0+ |
+| **Frontend Framework** | React 19+ | Modern web interface | 19.1.1+ |
+| **Language** | TypeScript 5+ | Type safety and developer experience | 5.8.2+ |
 | **Styling** | Tailwind CSS | Responsive design system | 3.0.0+ |
-| **Build Tool** | Vite | Fast development and building | 4.0.0+ |
-| **Desktop App** | Electron | Cross-platform desktop application | 31.0.0+ |
+| **Build Tool** | Vite | Fast development and building | 6.2.0+ |
 | **State Management** | React Hooks | Application state management | Built-in |
 | **Package Manager** | npm | Dependency management | 9.0.0+ |
 ---
@@ -130,6 +128,8 @@ npm run dev
 ### 🌟 Development Process
 
 This application was initially built using **Google AI Studio Apps Builder** which generated approximately 70% of the core functionality. The remaining 30% involved significant improvements, enhancements, and customizations From [ME](https://github.com/zSayf/) to create a polished, production-ready application with additional features and better user experience.
+
+In version 2.0.0, we've simplified the architecture by focusing on a web-only approach, removing Electron dependencies to reduce complexity and improve performance while maintaining all core functionality.
 
 ---
 
