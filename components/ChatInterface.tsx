@@ -1,7 +1,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import type { ChatMessage } from '../types';
-import { UserIcon, RobotIcon, SendIcon } from './icons';
+import { UserIcon, RobotIcon, SendIcon, PhotoIcon, CpuIcon } from './icons';
 
 interface ChatInterfaceProps {
   chatHistory: ChatMessage[];
@@ -16,6 +16,32 @@ interface MessageBubbleProps {
   msg: ChatMessage;
   isRtl: boolean;
 }
+
+// A simple search icon for the loading state
+const SearchIcon = (props: React.SVGProps<SVGSVGElement>) => (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" {...props}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
+    </svg>
+);
+
+
+const getLoadingIcon = (message: string): React.ReactNode => {
+    const lowerCaseMessage = message.toLowerCase();
+    const iconClass = "w-6 h-6 text-white animate-pulse-glow";
+
+    if (lowerCaseMessage.includes('search') || lowerCaseMessage.includes('بحث')) {
+        return <SearchIcon className={iconClass} />;
+    }
+    if (lowerCaseMessage.includes('analyzing') || lowerCaseMessage.includes('تحليل')) {
+        return <CpuIcon className={iconClass} />;
+    }
+    if (lowerCaseMessage.includes('image') || lowerCaseMessage.includes('صور')) {
+        return <PhotoIcon className={iconClass} />;
+    }
+    // Default
+    return <RobotIcon className={iconClass} />;
+};
+
 
 const MessageBubble: React.FC<MessageBubbleProps> = ({ msg, isRtl }) => {
   const isModel = msg.role === 'model';
@@ -62,6 +88,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ msg, isRtl }) => {
 
 const ChatInterface: React.FC<ChatInterfaceProps> = ({ chatHistory, onSendMessage, isLoading, loadingMessage, direction = 'ltr', isEgypt = false }) => {
   const [input, setInput] = useState('');
+  const [isSending, setIsSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -98,12 +125,15 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ chatHistory, onSendMessag
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
     if (input.trim() && !isLoading) {
+      setIsSending(true);
       onSendMessage(input.trim());
       setInput('');
+      setTimeout(() => setIsSending(false), 300); // Animation duration
     }
   };
 
   const isRtl = direction === 'rtl';
+  const loadingIcon = getLoadingIcon(loadingMessage || '');
 
   const placeholder = isEgypt ? "أجب عن الأسئلة أو أضف تفاصيل أخرى..." : "Answer the questions or add more details...";
   const loadingPlaceholder = isEgypt ? "برجاء الانتظار..." : "Please wait...";
@@ -122,10 +152,10 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ chatHistory, onSendMessag
                 <div className="flex items-start gap-4">
                     {!isRtl && 
                         <div className="w-10 h-10 rounded-full bg-cyan-500 flex-shrink-0 flex items-center justify-center">
-                            <RobotIcon className="w-6 h-6 text-white animate-pulse-glow" />
+                            {loadingIcon}
                         </div>
                     }
-                    <div className={`flex items-center gap-3 max-w-md md:max-w-lg px-5 py-3 rounded-2xl bg-slate-700/50 ${isRtl ? 'rounded-br-none' : 'rounded-bl-none'}`}>
+                    <div className={`flex items-baseline gap-3 max-w-md md:max-w-lg px-5 py-3 rounded-2xl bg-slate-700/50 ${isRtl ? 'rounded-br-none' : 'rounded-bl-none'}`}>
                         {loadingMessage && <p className="text-slate-300 italic">{loadingMessage}</p>}
                         <div className="flex items-center space-x-1.5">
                             <span className="typing-dot"></span>
@@ -135,7 +165,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ chatHistory, onSendMessag
                     </div>
                      {isRtl && 
                         <div className="w-10 h-10 rounded-full bg-cyan-500 flex-shrink-0 flex items-center justify-center">
-                            <RobotIcon className="w-6 h-6 text-white animate-pulse-glow" />
+                            {loadingIcon}
                         </div>
                     }
                 </div>
@@ -159,7 +189,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ chatHistory, onSendMessag
           <button 
             type="submit" 
             disabled={isLoading} 
-            className="bg-cyan-600 hover:bg-cyan-700 disabled:bg-slate-600 disabled:cursor-not-allowed text-white font-bold p-3 rounded-lg transition-all duration-200 ease-in-out transform hover:scale-105 active:scale-95 self-end animate-button-pop"
+            className={`bg-cyan-600 hover:bg-cyan-700 disabled:bg-slate-600 disabled:cursor-not-allowed text-white font-bold p-3 rounded-lg transition-all duration-200 ease-in-out transform hover:scale-105 active:scale-95 self-end ${isSending ? 'animate-button-press' : 'animate-button-pop'}`}
           >
             <SendIcon className={`w-6 h-6 ${isRtl ? 'transform -scale-x-100' : ''}`} />
           </button>
