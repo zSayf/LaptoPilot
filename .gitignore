@@ -10,7 +10,18 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+# Env files: loadEnv() reads .env* (plain .env is the conventional name), so
+# ignore them all. Keep .env.example as the committed template.
+.env
+.env.*
+!.env.example
 *.local
+.wrangler
+.playwright-mcp
+
+# electron-builder output: ~100MB+ of unsigned binaries + full Chromium.
+# Publish these via GitHub Releases (scripts/create-release.cjs), not git.
+release/
 
 # Editor directories and files
 .vscode/*

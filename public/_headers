@@ -1,0 +1,14 @@
+# Cloudflare Pages headers (published from dist/, read at the edge).
+#
+# There was no CSP anywhere before, which meant a single future change that
+# reactivated a bare import would let a third-party CDN execute script with full
+# same-origin privileges - enough to read localStorage.geminiApiKey.
+#
+# script-src is 'self' only: the old <script type="importmap"> block pointing at
+# aistudiocdn.com is deleted, and Vite bundles React/@google/genai locally.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://generativelanguage.googleapis.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY
+  Permissions-Policy: geolocation=(), microphone=(), camera=()

@@ -1,0 +1,15 @@
+{
+	// Cloudflare Pages deployment for LaptoPilot.
+	//
+	// The app is a fully client-side static site: users paste their own Gemini
+	// API key in the browser (BYOK), so there are no Worker functions and no
+	// server-side secrets in this project.
+	//
+	// Deploy with:
+	//   npx wrangler pages deploy dist --project-name laptopilot
+	// (run `npx wrangler login` first)
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "laptopilot",
+	"pages_build_output_dir": "dist",
+	"compatibility_date": "2026-10-01"
+}

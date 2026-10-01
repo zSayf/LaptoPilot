@@ -1,8 +1,121 @@
 import { GoogleGenAI, FunctionDeclaration, Type } from "@google/genai";
-import type { Laptop, GroundingSource, RecommendationArgs } from '../types';
+import type { Laptop, GroundingSource, RecommendationArgs, CompatibleModel, ModelTier } from '../types';
+import { getModelChain, getSelectedModel, MODEL_CHAIN } from './modelStore';
 
-// Remove the environment variable check and initialization
-// We'll create instances dynamically based on provided API keys
+// Re-exported so existing importers can keep pulling model types/constants from
+// this module instead of reaching into modelStore / types.
+export type { CompatibleModel, ModelTier };
+export { GEMINI_MODELS, MODEL_CHAIN, getSelectedModel, setSelectedModel } from './modelStore';
+
+// ---------------------------------------------------------------------------
+// Model discovery
+// ---------------------------------------------------------------------------
+
+/** Rank used to order tiers best-first. */
+const TIER_RANK: Record<ModelTier, number> = {
+    pro: 0,
+    flash: 1,
+    'flash-lite': 2,
+    standard: 3,
+};
+
+/**
+ * Model families that cannot run this app, even though they support
+ * generateContent. This app needs two capabilities: Google Search grounding
+ * (for live pricing/retailer lookups) and JSON-schema structured output (for
+ * the extraction + feature-analysis steps). None of these families offer both,
+ * so we drop them up front instead of letting the user pick a broken model.
+ */
+const UNSUPPORTED_PATTERNS: RegExp[] = [
+    /embedding/i,       // text-embedding-*       -> vectors only
+    /imagen/i,          // imagen-*               -> image generation
+    /-image$/i,         // gemini-3.1-flash-image -> image generation (Nano Banana)
+    /image-preview/i,
+    /tts/i,             // *-tts                  -> speech synthesis
+    /live/i,            // *-live                 -> realtime audio/video
+    /native-audio/i,
+    /audio-dialog/i,
+    /veo/i,             // veo-*                  -> video generation
+    /music/i,
+    /robotics/i,
+    /computer-use/i,
+    /gemma/i,           // no Google Search grounding on the Gemini API
+    /learnlm/i,
+    // Verified against a live models.list: these advertise generateContent but
+    // are not general-purpose text models, so grounding/extraction would fail.
+    /transcribe/i,      // gemini-3.5-transcribe   -> audio transcription only
+    /omni/i,            // gemini-omni-*           -> modality-specific, no search
+];
+
+function classifyTier(id: string): ModelTier {
+    if (/flash-lite/i.test(id)) return 'flash-lite';
+    if (/flash/i.test(id)) return 'flash';
+    if (/-pro/i.test(id)) return 'pro';
+    return 'standard';
+}
+
+/** "gemini-3.8-flash" -> 3.8, so newest models sort first. */
+function parseVersion(id: string): number {
+    const m = id.match(/(\d+)\.(\d+)/);
+    return m ? parseFloat(`${m[1]}.${m[2]}`) : 0;
+}
+
+/**
+ * Fetch every model the provided key can use, filtered down to the ones that
+ * can actually power this app. Scoped to the key, so a free-tier key returns a
+ * smaller list than a billed one.
+ */
+export async function listCompatibleModels(apiKey: string): Promise<CompatibleModel[]> {
+    const ai = getAiInstance(apiKey);
+    const pager = await ai.models.list();
+
+    const out: CompatibleModel[] = [];
+    for await (const m of pager) {
+        if (!m.name) continue;
+
+        // API returns "models/gemini-3.8-flash"; we want the bare id.
+        const id = m.name.replace(/^models\//, '');
+
+        if (!id.startsWith('gemini-')) continue;
+        if (UNSUPPORTED_PATTERNS.some((re) => re.test(id))) continue;
+
+        // The capability field is named `supportedActions` in the SDK types, but
+        // the live API has also returned `supportedGenerationMethods`. Accept
+        // either, and treat an absent field as "unknown" rather than "no".
+        const caps = (m as any).supportedActions ?? (m as any).supportedGenerationMethods;
+        if (Array.isArray(caps) && !caps.includes('generateContent')) continue;
+
+        out.push({
+            id,
+            displayName: m.displayName || id,
+            description: m.description,
+            inputTokenLimit: m.inputTokenLimit,
+            outputTokenLimit: m.outputTokenLimit,
+            tier: classifyTier(id),
+            version: parseVersion(id),
+        });
+    }
+
+    return out.sort((a, b) =>
+        TIER_RANK[a.tier] - TIER_RANK[b.tier] || b.version - a.version
+    );
+}
+
+/**
+ * The built-in default chain, shaped like a model list.
+ *
+ * Used as a fallback when models.list is unavailable (rate limited, offline),
+ * so the picker still offers something instead of rendering empty.
+ */
+export function getDefaultCompatibleModels(): CompatibleModel[] {
+    return MODEL_CHAIN.map((id) => ({
+        id,
+        displayName: id,
+        tier: classifyTier(id),
+        version: parseVersion(id),
+    }));
+}
+
 
 export const findLaptopRecommendationsTool: FunctionDeclaration = {
     name: 'findLaptopRecommendations',
@@ -74,25 +187,56 @@ export function getAiInstance(apiKey: string) {
     return new GoogleGenAI({ apiKey });
 }
 
+/**
+ * Pause between two entries of the fallback chain.
+ *
+ * Every entry is a real request, and one search fires several chains back to
+ * back (search, extraction, feature analysis, then up to IMAGE_BUDGET_PER_SEARCH
+ * image lookups). Walking the chain with no gap at all turns that into a burst
+ * of ~60 requests in a few seconds, which on the free tier's 15 requests/minute
+ * is a guaranteed 429 - the fallback would then fail for the same reason the
+ * primary did. The jitter keeps concurrent clients from falling through in
+ * lockstep and re-colliding on the same window.
+ */
+const CHAIN_STEP_DELAY_MS = 1200;
+const CHAIN_STEP_JITTER_MS = 400;
+
 // New function to handle model fallback strategy
 async function callWithFallback<T>(
     apiKey: string,
     operation: (model: string) => Promise<T>
 ): Promise<T> {
-    const models = ['gemini-2.5-pro', 'gemini-2.5-pro', 'gemini-2.5-flash-lite'];
+    // Read the chain live so a user-selected model takes effect immediately,
+    // falling back to the built-in chain if the store has not been seeded.
+    const models = getModelChain();
     let lastError: any;
 
-    for (const model of models) {
+    for (let i = 0; i < models.length; i++) {
+        const model = models[i];
         try {
-            return await operation(model);
+            return await runWithRetry(model, operation);
         } catch (error: any) {
             console.warn(`Model ${model} failed:`, error.message);
             lastError = error;
-            
-            // If it's not a quota error, try the next model
-            // For quota errors, we still want to try fallback models
-            if (error.status === 429) {
-                console.log(`Rate limit hit for ${model}, trying fallback model...`);
+
+            // Deliberately NOT breaking here on quota exhaustion. The free-tier
+            // daily cap is per-project *per-model*
+            // (GenerateRequestsPerDayPerProjectPerModel), so a different model
+            // may still have budget left. runWithRetry already prevents us
+            // re-hammering the same model, so walking the chain costs one
+            // request each rather than a full retry storm.
+
+            // Space the attempts out, but only when the failure was itself
+            // transient - that is exactly the case where pacing can help. A 400
+            // or 404 will not improve by waiting, and sleeping through those
+            // would only delay surfacing a real error to the user. 429 is
+            // included on purpose: isQuotaExhausted cannot tell a blown daily cap
+            // from a blown per-minute window, and the pause is what rescues the
+            // second case.
+            if (i < models.length - 1 && isTransientError(error)) {
+                const pause = CHAIN_STEP_DELAY_MS + Math.random() * CHAIN_STEP_JITTER_MS;
+                console.warn(`Pausing ${Math.round(pause)}ms before trying the next model...`);
+                await sleep(pause);
             }
         }
     }
@@ -101,20 +245,219 @@ async function callWithFallback<T>(
     throw lastError;
 }
 
-// Function to validate API key
-export async function validateApiKey(apiKey: string): Promise<boolean> {
-    try {
-        const ai = getAiInstance(apiKey);
-        // Make a simple request to test the API key
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-pro',
-            contents: 'Hello, this is a test to validate the API key.',
-        });
-        return !!response.text;
-    } catch (error) {
-        console.error('API key validation failed:', error);
-        return false;
+/** Why a key check failed, so the UI can say something truthful about it. */
+export type ApiKeyCheckReason = 'auth' | 'model' | 'transient';
+
+export interface ApiKeyCheck {
+    valid: boolean;
+    /**
+     * True only when the failure was genuinely temporary - rate limit, model
+     * overloaded (503 UNAVAILABLE), or a network blip. False means either the
+     * key itself is bad or the request was permanently unacceptable (a 404 for
+     * a model this key cannot reach, a 400 for a malformed request); neither
+     * improves by retrying. Callers must not tell a user their key is invalid,
+     * and must not tell them "Google's servers are busy", when this is true.
+     */
+    transient: boolean;
+    /**
+     * Distinguishes a bad key ('auth'), a key that cannot reach the model
+     * ('model') and a temporary outage ('transient'). `transient` stays the
+     * backwards-compatible flag; this exists so the UI can stop telling a user
+     * to replace a perfectly good key because no model in the chain was
+     * available to it.
+     */
+    reason?: ApiKeyCheckReason;
+    error?: string;
+}
+
+/** HTTP statuses / error codes that mean "the key is wrong", not "try later". */
+const AUTH_ERROR_PATTERN =
+    /API_KEY_INVALID|API key not valid|PERMISSION_DENIED|UNAUTHENTICATED|invalid api key/i;
+
+function isAuthError(error: any): boolean {
+    const status = error?.status;
+
+    // 401/403 are always credential problems.
+    if (status === 401 || status === 403) return true;
+
+    const msg = String(error?.message ?? '');
+
+    // A bare 400 is usually a malformed request (e.g. a config field this model
+    // does not support), NOT a bad key. Only treat it as auth when the message
+    // actually talks about the key - otherwise a valid key gets rejected.
+    if (status === 400) return /api[-_ ]?key/i.test(msg);
+
+    return AUTH_ERROR_PATTERN.test(msg);
+}
+
+/**
+ * Currency codes are fed straight into `new Intl.NumberFormat({ currency })`
+ * during render. That constructor throws RangeError on anything that isn't
+ * exactly three ASCII letters, which would unmount the whole React tree - the
+ * user would lose the results AND the follow-up chat, not just one card.
+ * The extraction prompt explicitly invites the model to leave fields empty, so
+ * "currency": "" is an expected outcome, not a hypothetical.
+ */
+function isValidCurrencyCode(value: unknown): boolean {
+    return typeof value === 'string' && /^[A-Za-z]{3}$/.test(value);
+}
+
+/** Overload / rate-limit / gateway statuses that are worth retrying. */
+const TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+
+function isTransientError(error: any): boolean {
+    // No HTTP status at all means the request never reached Google - offline,
+    // DNS failure, captive portal. That is the single most common transient
+    // error and it must be retried, not written off as permanent.
+    if (error?.status === undefined) return true;
+    return TRANSIENT_STATUSES.has(error?.status);
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Exponential backoff with jitter, per Google's documented retry guidance:
+ * https://ai.google.dev/gemini-api/docs/troubleshooting#retry_strategy
+ * (~1s, 2s, 4s, 8s, randomised so concurrent clients don't retry in lockstep).
+ * A 429 starts from a longer base because it signals quota pressure rather
+ * than a momentary blip.
+ */
+function backoffDelayMs(attempt: number, status?: number): number {
+    const base = status === 429 ? 2000 : 1000;
+    const exponential = base * Math.pow(2, attempt);
+    const jitter = Math.random() * 500;
+    return Math.min(exponential + jitter, 30_000);
+}
+
+/**
+ * True when a 429 means the account's quota is spent, not that we were briefly
+ * rate limited. Google's message is explicit: "You exceeded your current
+ * quota, please check your plan and billing details."
+ *
+ * This distinction matters a lot: a quota-exhausted key is a VALID key, and no
+ * amount of retrying or model-switching will help until the quota resets.
+ *
+ * **Known limit of the heuristic:** the API reports a blown per-minute
+ * (requests-per-project) window with the same 429 / RESOURCE_EXHAUSTED status
+ * as a blown daily cap, and its "quota exceeded" wording can satisfy this
+ * pattern too. So a request burst can be misread as "the quota is gone" and
+ * latch off every remaining image lookup, even though the user still has a
+ * normal short window to retry in. That is a deliberate trade: erring toward
+ * "transient" only costs one wasted search, while ignoring a genuinely spent
+ * daily cap burns the user's last remaining requests. Do not loosen the
+ * pattern without re-checking the two callers that latch state on it.
+ */
+export function isQuotaExhausted(error: any): boolean {
+    if (error?.status !== 429) return false;
+    return /exceeded your current quota|quota exceeded|RESOURCE_EXHAUSTED/i.test(
+        String(error?.message ?? '')
+    );
+}
+
+/**
+ * Run `op` against a single model, retrying transient failures with exponential
+ * backoff. Only 429/408/5xx and network errors are retried - never 4xx client
+ * errors, which indicate bad syntax or a bad key.
+ *
+ * Quota exhaustion is excluded: retrying it just burns requests that can never
+ * succeed.
+ */
+async function runWithRetry<T>(
+    model: string,
+    op: (model: string) => Promise<T>,
+    retries = 2
+): Promise<T> {
+    let lastError: any;
+
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+            return await op(model);
+        } catch (error: any) {
+            lastError = error;
+
+            const retryable =
+                attempt < retries &&
+                !isAuthError(error) &&
+                !isQuotaExhausted(error) &&
+                isTransientError(error);
+            if (!retryable) break;
+
+            const delay = backoffDelayMs(attempt, error?.status);
+            console.warn(
+                `${model} hit ${error?.status ?? 'a network error'}, retrying in ${Math.round(delay)}ms...`
+            );
+            await sleep(delay);
+        }
     }
+
+    throw lastError;
+}
+
+/**
+ * Validate the API key by making a real request.
+ *
+ * Walks the fallback chain, because a single busy model must not be reported as
+ * a bad key: Gemini 3.x answers 503 UNAVAILABLE ("high demand") fairly often,
+ * and the next model in the chain usually succeeds.
+ *
+ * Note that a completed HTTP response is itself the proof. The body is not
+ * inspected: a thinking model can reply with thought parts only, leaving
+ * `response.text` empty, and treating that as a bad key would lock out a
+ * perfectly good one.
+ */
+export async function validateApiKey(apiKey: string): Promise<ApiKeyCheck> {
+    const ai = getAiInstance(apiKey);
+    let lastError: any;
+    let sawTransient = false;
+    let sawPermanent = false;
+
+    for (const model of getModelChain()) {
+        try {
+            await runWithRetry(model, (m) =>
+                ai.models.generateContent({
+                    model: m,
+                    contents: 'Reply with the single word: ok',
+                })
+            );
+            return { valid: true, transient: false };
+        } catch (error: any) {
+            console.warn(`Key validation failed on ${model}:`, error?.message);
+
+            // A rejected key will be rejected on every model - stop immediately.
+            if (isAuthError(error)) {
+                return {
+                    valid: false,
+                    transient: false,
+                    reason: 'auth',
+                    error: String(error?.message ?? error),
+                };
+            }
+
+            // Not an auth failure, so the key is probably fine - but this model
+            // could not serve it. Keep walking the chain either way: a 404 on
+            // the primary just means we should try the next model, and a 503 on
+            // every model still means Google's capacity, not the user.
+            lastError = error;
+            if (isTransientError(error)) {
+                sawTransient = true;
+            } else {
+                sawPermanent = true;
+            }
+        }
+    }
+
+    console.error('API key validation failed on every model in the chain:', lastError);
+    return {
+        valid: false,
+        // A single transient failure anywhere in the chain is enough to call
+        // this temporary. Reporting transient only when the *last* model failed
+        // transiently would be worse: a 404 on model 3 says nothing about the
+        // 503 model 1 already hit, and the user should not be locked out over
+        // what was a capacity blip.
+        transient: sawTransient,
+        reason: sawTransient ? 'transient' : sawPermanent ? 'model' : undefined,
+        error: lastError ? String(lastError?.message ?? lastError) : undefined,
+    };
 }
 
 export async function getLaptopRecommendations(
@@ -189,6 +532,9 @@ export async function getLaptopRecommendations(
             contents: extractionPrompt,
             config: {
                 responseMimeType: "application/json",
+                // thinkingConfig is deliberately omitted: several Flash Lite
+                // models reject the field with 400 INVALID_ARGUMENT, which would
+                // fail this entire extraction step.
                 responseSchema: {
                     type: Type.ARRAY,
                     items: laptopSchema,
@@ -197,8 +543,36 @@ export async function getLaptopRecommendations(
         });
     });
 
-    const laptops = JSON.parse(extractionResponse.text) as Laptop[];
-    
+    // The HTTP call succeeded, so an empty/malformed body is a content problem,
+    // not a transport one - and it must not be blamed on the model, which would
+    // otherwise be skipped over when we could just try the next one.
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(extractionResponse.text ?? '');
+    } catch (parseError) {
+        console.warn('Extraction returned unparseable JSON:', parseError);
+        throw new Error(
+            'The model returned a response we could not read. Please try again.'
+        );
+    }
+
+    if (!Array.isArray(parsed)) {
+        throw new Error(
+            'The model returned an unexpected response shape. Please try again.'
+        );
+    }
+
+    const laptops = (parsed as Laptop[]).map((laptop) => ({
+        ...laptop,
+        // Repair an unusable currency rather than letting it crash the render.
+        // The extraction prompt tells the model to leave missing fields empty, so
+        // "currency": "" is an expected output, not an edge case.
+        currency: isValidCurrencyCode(laptop?.currency)
+            ? laptop.currency.toUpperCase()
+            : args.currency,
+        specs: laptop?.specs ?? ({} as Laptop['specs']),
+    }));
+
     // Add validation to ensure all required fields are populated with specific information
     const validateLaptopStrict = (laptop: Laptop): boolean => {
         // Check that all basic fields are present
@@ -363,6 +737,31 @@ export async function getLaptopRecommendations(
         return true;
     };
     
+    /**
+     * The bare minimum the rest of the app assumes exists: a name to put on the
+     * card, and a specs block holding at least one real value.
+     *
+     * Deliberately looser than validateLaptopMinimal - any of the nine spec
+     * fields counts here, not just cpu/gpu/ram - so it can still rescue a row
+     * that failed the stricter checks over a missing price or retailer URL while
+     * never rescuing one that would render as a blank shell.
+     */
+    const hasRenderableShell = (laptop: Laptop): boolean => {
+        if (typeof laptop?.modelName !== 'string' || laptop.modelName.trim().length === 0) {
+            return false;
+        }
+
+        // `laptops` is cast straight from untrusted JSON, so `specs` is not
+        // guaranteed to be an object even though the repair step above defaults
+        // a missing one to {}.
+        const specs = laptop?.specs as unknown as Record<string, unknown> | undefined | null;
+        if (!specs || typeof specs !== 'object') return false;
+
+        return Object.values(specs).some(
+            (value) => typeof value === 'string' && value.trim().length > 0
+        );
+    };
+    
     // First try with strict validation
     let validLaptops = laptops.filter(validateLaptopStrict);
     
@@ -390,10 +789,20 @@ export async function getLaptopRecommendations(
         }
     }
     
-    // If we still have no laptops, try to return something with at least basic information
+    // If we still have no laptops, salvage whatever is still renderable rather
+    // than returning rows that break the screen. A blind slice here used to hand
+    // back laptops whose specs block was empty: analyzeBestFeatures interpolates
+    // l.specs.cpu into its prompt and LaptopCard reads the same fields, so those
+    // rows rendered as a blank shell (or blew up on an undefined deref) instead
+    // of a degraded card. Requiring a name plus one real spec value is looser
+    // than validateLaptopMinimal, so this still rescues rows that failed it for
+    // an unrelated reason such as a missing retailer URL.
     if (validLaptops.length === 0 && laptops.length > 0) {
-        console.warn(`No laptops passed validation. Returning top 3 laptops with any information.`);
-        validLaptops = laptops.slice(0, Math.min(3, laptops.length));
+        const salvaged = laptops.filter(hasRenderableShell).slice(0, 3);
+        if (salvaged.length > 0) {
+            console.warn(`No laptops passed validation. Returning top ${salvaged.length} laptop(s) with partial specs.`);
+            validLaptops = salvaged;
+        }
     }
     
     if (validLaptops.length === 0) {
@@ -423,26 +832,43 @@ export async function getLaptopRecommendations(
   }
 }
 
+/**
+ * Set once a quota-exhausted 429 is seen. Images are pure decoration, so after
+ * this point we stop issuing image requests entirely rather than burning the
+ * user's remaining quota on searches that cannot succeed.
+ */
+let quotaExhausted = false;
+
+/**
+ * Images are decorative but cost real quota: two grounded searches per laptop.
+ * Cap how many we chase per search instead of rate-limiting on a clock.
+ *
+ * A previous version used a 60s localStorage cooldown, which was wrong twice
+ * over: the read/write was a check-then-act race (all 5 Promise.all siblings
+ * passed it), and once made atomic it suppressed 4 of every 5 lookups, leaving
+ * most cards with no image. An explicit budget is predictable and self-documenting.
+ */
+const IMAGE_BUDGET_PER_SEARCH = 3;
+let imageBudget = IMAGE_BUDGET_PER_SEARCH;
+
+export function resetQuotaExhaustedFlag(): void {
+    quotaExhausted = false;
+    imageBudget = IMAGE_BUDGET_PER_SEARCH;
+}
+
 export async function generateLaptopImage(modelName: string, apiKey: string): Promise<string | null> {
-    // Check if image generation is disabled
-    const IMAGE_GENERATION_ENABLED = true; // Always enable for user-provided keys
-    
-    // First check if we've hit rate limits recently
-    const lastRequestTime = localStorage.getItem('lastImageRequestTime');
-    const rateLimitPeriod = 60000; // 1 minute
-    if (lastRequestTime) {
-        const timeDiff = Date.now() - parseInt(lastRequestTime);
-        if (timeDiff < rateLimitPeriod) {
-            console.log(`Skipping image request for "${modelName}" due to rate limiting (${Math.ceil((rateLimitPeriod - timeDiff) / 1000)}s remaining)`);
-            return null;
-        }
-    }
-    
+    // Quota already known to be spent, or budget spent: don't issue the request.
+    if (quotaExhausted || imageBudget <= 0) return null;
+
+    // Claim a slot synchronously, before any await, so concurrent siblings in a
+    // Promise.all fan-out can't all pass this check.
+    imageBudget -= 1;
+
     try {
         const ai = getAiInstance(apiKey);
         // Instead of generating images, search for them using Google Search
         const searchPrompt = `Find an official product image for '${modelName}' laptop from manufacturer website or major retailer. Return only the image URL.`;
-        
+
         // Use fallback strategy for image search
         const response = await callWithFallback(apiKey, async (model) => {
             return await ai.models.generateContent({
@@ -454,22 +880,20 @@ export async function generateLaptopImage(modelName: string, apiKey: string): Pr
             });
         });
 
-        // Update last request time
-        localStorage.setItem('lastImageRequestTime', Date.now().toString());
-
         // Extract image URL from the search results
+        const urlRegex = /(https?:\/\/[^\s"]+\.(?:jpg|jpeg|png|webp))/gi;
+
         if (response.text) {
-            // Try to extract URL from the response
-            const urlRegex = /(https?:\/\/[^\s"]+\.(?:jpg|jpeg|png|webp))/gi;
             const matches = response.text.match(urlRegex);
-            
             if (matches && matches.length > 0) {
                 // Return the first valid image URL found
                 return matches[0];
             }
         }
-        
-        // Fallback: Try a more general search
+
+        // Only retry once, and never on quota exhaustion. The old code always
+        // issued a second search, doubling image requests for zero benefit when
+        // the failure was a 429 rather than a genuinely fruitless search.
         console.warn(`No image found for "${modelName}" in initial search. Trying fallback search.`);
         const fallbackResponse = await callWithFallback(apiKey, async (model) => {
             return await ai.models.generateContent({
@@ -480,23 +904,24 @@ export async function generateLaptopImage(modelName: string, apiKey: string): Pr
                 },
             });
         });
-        
-        // Update last request time
-        localStorage.setItem('lastImageRequestTime', Date.now().toString());
-        
+
         if (fallbackResponse.text) {
-            const urlRegex = /(https?:\/\/[^\s"]+\.(?:jpg|jpeg|png|webp))/gi;
             const matches = fallbackResponse.text.match(urlRegex);
-            
             if (matches && matches.length > 0) {
                 return matches[0];
             }
         }
-        
+
         console.warn(`No image found for "${modelName}" after fallback search.`);
         return null;
 
     } catch (error) {
+        // Latch the quota state so sibling image lookups stop firing.
+        if (isQuotaExhausted(error)) {
+            quotaExhausted = true;
+            console.warn('Image lookup skipped for remaining laptops: API quota exhausted.');
+            return null;
+        }
         console.error(`Error searching for image for "${modelName}":`, error);
         // Log additional details if available
         if (error instanceof Error) {
@@ -505,9 +930,19 @@ export async function generateLaptopImage(modelName: string, apiKey: string): Pr
             // If it's a Google API error, log additional details
             if ('status' in error) {
                 console.error(`API Status: ${(error as any).status}`);
-                // If we hit rate limits, store the time to prevent further requests
+                // If we hit rate limits, record the time to prevent further requests
                 if ((error as any).status === 429) {
-                    localStorage.setItem('lastImageRequestTime', Date.now().toString());
+                    // Diagnostic only - the real throttle is the imageBudget
+                    // counter above, since this key is never read back. Storage
+                    // is also unavailable in private mode, where both getItem and
+                    // setItem throw a SecurityError, so guard it rather than
+                    // letting a logging side effect replace the real error with
+                    // a confusing one.
+                    try {
+                        localStorage.setItem('lastImageRequestTime', Date.now().toString());
+                    } catch {
+                        // Storage disabled / private browsing - nothing to record.
+                    }
                 }
             }
             if ('code' in error) {
