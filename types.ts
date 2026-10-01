@@ -35,7 +35,24 @@ export interface Laptop {
   bestFeature?: string;
 }
 
-export type AppState = 'welcome' | 'chatting' | 'loading' | 'results' | 'apiKeySetup';
+export type AppState = 'welcome' | 'chatting' | 'loading' | 'results' | 'apiKeySetup' | 'modelSelect';
+
+/** Capability tier of a Gemini model, derived from its id. */
+export type ModelTier = 'pro' | 'flash' | 'flash-lite' | 'standard';
+
+/** A model that can power this app, as returned by listCompatibleModels. */
+export interface CompatibleModel {
+    /** Bare model id, e.g. "gemini-3.8-flash" (no "models/" prefix). */
+    id: string;
+    displayName: string;
+    description?: string;
+    inputTokenLimit?: number;
+    outputTokenLimit?: number;
+    tier: ModelTier;
+    /** Numeric version parsed out of the id, used for newest-first sorting. */
+    version: number;
+}
+
 
 export interface GroundingSource {
     uri: string;

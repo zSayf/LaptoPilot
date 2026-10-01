@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+/*
+ * Tailwind v4 scans the project for class names automatically. The sources
+ * below are declared explicitly because this app keeps its components at the
+ * repo root rather than under src/.
+ */
+@source "./index.html";
+@source "./App.tsx";
+@source "./components/**/*.tsx";
+@source "./index.tsx";
+
+/* Animations defined inline in App.tsx are plain CSS and flow through as-is. */
